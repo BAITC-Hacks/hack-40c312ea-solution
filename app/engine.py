@@ -27,6 +27,11 @@ def requested_brand(text: str) -> str | None:
     return next((brand for brand in ('schneider', 'legrand', 'abb', 'iek', 'chint', 'dekraft', 'ekt') if re.search(r'\b' + brand + r'\b', lower)), None)
 
 
+def requested_cable_size(text: str) -> tuple[str, str] | None:
+    match = re.search(r'\b(\d+)\s*[xх×]\s*(\d+(?:[,.]\d+)?)\b', text, re.I)
+    return (match.group(1), match.group(2).replace(',', '.')) if match else None
+
+
 def attributes(product: dict) -> dict:
     p = product.get('properties') or {}
     return {
@@ -46,6 +51,17 @@ def conflict_warnings(product: dict) -> list[str]:
     if named and field and named.group(1) != field.group(1):
         return [f'Источник противоречив: название {named.group(1)} А, свойство {field.group(1)} А. Требуется проверка менеджером.']
     return []
+
+
+def certificate_info(product: dict) -> tuple[str | None, str]:
+    for key, value in (product.get('properties') or {}).items():
+        if any(marker in key.casefold() for marker in ('sertif', 'certif', 'сертифик')):
+            values = value if isinstance(value, list) else [value]
+            for candidate in values:
+                if isinstance(candidate, str) and candidate.startswith('https://'):
+                    return candidate, 'Ссылка на сертификат указана в API'
+            return None, 'Поле сертификата есть, но ссылка не предоставлена'
+    return None, 'Сертификат не указан в API'
 
 
 class Engine:
@@ -99,6 +115,7 @@ class Engine:
         words = [w for w in q.split() if len(w) > 1]
         requested_amps, requested_poles = requested_electrical(query)
         brand = requested_brand(query)
+        cable_size = requested_cable_size(query)
         ranked = []
         for item in self.catalog:
             hay = tokens(f"{item.get('name','')} {item.get('article','')} {item.get('url','')}")
@@ -111,6 +128,10 @@ class Engine:
                 score += 50 if requested_poles == item_poles else -70
             if brand:
                 score += 150 if brand in hay else -80
+            if cable_size:
+                item_size = requested_cable_size(item.get('name', ''))
+                if item_size:
+                    score += 100 if item_size == cable_size else -130
             if score > 30:
                 ranked.append((score, item))
         ranked.sort(key=lambda x: x[0], reverse=True)
@@ -127,6 +148,7 @@ class Engine:
         products = await self.search(query)
         requested_amps, requested_poles = requested_electrical(query)
         brand = requested_brand(query)
+        cable_size = requested_cable_size(query)
         for p in products:
             p['_match_warnings'] = []
             found_amps, found_poles = requested_electrical(p.get('name', ''))
@@ -134,8 +156,11 @@ class Engine:
                 p['_match_warnings'].append(f'Ток отличается: требуется {requested_amps} А, товар {found_amps} А.')
             if requested_poles and found_poles and requested_poles != found_poles:
                 p['_match_warnings'].append(f'Полюса отличаются: требуется {requested_poles}, товар {found_poles}.')
+            found_size = requested_cable_size(p.get('name', ''))
+            if cable_size and found_size and cable_size != found_size:
+                p['_match_warnings'].append(f'Сечение/число жил отличаются: требуется {cable_size[0]}×{cable_size[1]}, товар {found_size[0]}×{found_size[1]}.')
         if mode == 'cheapest':
-            products.sort(key=lambda p: (bool(p['_match_warnings']), p.get('price') is None, p.get('price') or 10**12))
+            products.sort(key=lambda p: (bool(p['_match_warnings']), not bool(p.get('quantity')), p.get('price') is None, p.get('price') or 10**12))
         elif mode == 'available':
             products.sort(key=lambda p: (bool(p['_match_warnings']), -(p.get('quantity') or 0)))
         elif mode == 'brand':
@@ -144,14 +169,22 @@ class Engine:
             products.sort(key=lambda p: (bool(p['_match_warnings']), not bool(p.get('quantity')), -p.get('_search_score', 0)))
         cards = []
         for p in products:
+            certificate, certificate_status = certificate_info(p)
+            attrs = attributes(p)
+            missing_fields = []
+            if requested_amps and not attrs['current']:
+                missing_fields.append('nominal_current')
+            if requested_poles and not attrs['poles']:
+                missing_fields.append('poles')
             cards.append({
                 'id': p['id'], 'name': p.get('name'), 'article': p.get('article'),
                 'price': p.get('price'), 'quantity': p.get('quantity'),
                 'url': p.get('url'), 'image': p.get('image'),
-                'description': p.get('description'), 'attributes': attributes(p),
+                'description': p.get('description'), 'attributes': attrs,
                 'warnings': conflict_warnings(p) + p['_match_warnings'], 'stores': [s for s in p.get('stores', []) if s.get('quantity', 0) > 0],
                 'compatibility': 'uncertain' if conflict_warnings(p) else ('incompatible' if p['_match_warnings'] else 'uncertain'),
-                'reason': 'Совпадают запрошенные параметры в названии; проверяйте свойства и предупреждения.' if not p['_match_warnings'] else 'Есть расхождение с запросом; используйте как аналог только после проверки.',
-                'certificate': None,
+                'missing_fields': missing_fields,
+                'reason': 'Совпадение по названию; полная совместимость не подтверждена.' if not p['_match_warnings'] else 'Есть расхождение с запросом; используйте как аналог только после проверки.',
+                'certificate': certificate, 'certificate_status': certificate_status,
             })
-        return {'query': query, 'mode': mode, 'products': cards, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
+        return {'query': query, 'mode': mode, 'products': cards, 'selected': cards[0] if cards else None, 'total': cards[0]['price'] if cards else None, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
