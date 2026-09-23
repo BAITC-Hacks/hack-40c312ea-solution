@@ -1,0 +1,13 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>EKT AI Engineer</title><link rel="stylesheet" href="/style.css"></head><body>
+<header><div class="brand"><span class="mark">E</span><div><b>EKT AI Engineer</b><small>From specification to solution</small></div></div><span class="live">● LIVE CATALOG</span></header>
+<main><section class="left"><div class="hero"><div class="eyebrow">TECHNICAL PROCUREMENT AGENT</div><h1>От задачи — к готовому решению.</h1><p>Найдём реальные товары EKT, проверим остатки и поможем собрать комплект.</p></div>
+<div id="chat" class="chat"><div class="bubble bot">Здравствуйте! Опишите задачу, укажите артикул или загрузите спецификацию. Я проверю товары по каталогу EKT.</div></div>
+<form id="query-form"><input id="query" placeholder="Например: автомат Schneider 3P 32A" autocomplete="off"><button>Найти решение ↗</button></form>
+<div class="examples"><button data-q="515291">Товар 515291</button><button data-q="автомат Schneider 3P 32A">Автомат Schneider</button><button data-q="защита двигателя 11 кВт 380 В">Защита двигателя</button></div>
+<div class="upload"><label for="file">＋ Загрузить спецификацию</label><input id="file" type="file" accept=".xlsx,.xls,.csv,.docx,.pdf,.jpg,.jpeg,.png"><span>Excel · CSV · Word · PDF · фото</span></div></section>
+<section class="right"><div class="panel-title"><div><div class="eyebrow">SOLUTION BUILDER</div><h2>Подбор товаров</h2></div><span id="model">DIRECT</span></div>
+<div class="modes"><button class="active" data-mode="best">Лучшее совпадение</button><button data-mode="cheapest">Дешевле</button><button data-mode="available">В наличии</button></div>
+<div id="results" class="results"><div class="empty">Здесь появятся проверенные товары с ценой и остатком.</div></div>
+<div class="activity"><b>Ход работы</b><div id="events">Ожидаю запрос</div></div>
+<div class="cart"><b>Локальная корзина</b><div id="cart">Пока пуста</div><small>Добавление только после отдельного подтверждения. Официальная корзина EKT не изменяется.</small></div></section></main>
+<script src="/app.js"></script></body></html>
