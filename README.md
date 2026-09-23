@@ -5,16 +5,20 @@ AI Sales Engineer for ekt.kz: search real products, verify live details, compare
 ## Run
 
 1. Install Python 3.11+ and `pip install -r requirements.txt`.
-2. Copy `.env.example` to `.env`, set `EKT_PASSWORD` and optional model API keys.
+2. Copy `.env.example` to `.env`, set `EKT_PASSWORD` and optional OpenAI/NVIDIA API keys with model IDs.
 3. Run `uvicorn app.main:app --reload` and open `http://127.0.0.1:8000`.
 
-The catalog sync fetches the first `CATALOG_PAGES` pages (20 products each) and caches them locally. This bounded cache is a demo limitation: an uncached product ID still uses live detail lookup. Price and stock displayed for shortlisted products come from the live detail endpoint. The EKT API exposes no verified delivery ETA or cart mutation endpoint in the supplied contract, so the cart is session-local and links to the official EKT basket for manual checkout. It does not claim to modify the remote basket.
+The catalog sync fetches up to `CATALOG_PAGES` pages (20 products each), stops when EKT repeats page one, and caches them locally. Product ID lookup still uses live detail lookup. Price and stock displayed for shortlisted products come from the live detail endpoint. The EKT API exposes no individual delivery ETA or verified cart mutation endpoint in the supplied contract, so the cart is session-local and links to the official EKT basket for manual checkout. It does not claim to modify the remote basket.
 
 ## Architecture
 
 `Browser → FastAPI → EKT client → catalog cache/search → live details → solution/compatibility → confirmation gate → local cart`
 
-Model routing uses no model for exact lookups and product facts. Optional models are configured through environment variables; the deterministic path works without provider keys.
+Model routing uses no model for exact lookups and product facts. Short requests route to `CHEAP`, comparisons to `MEDIUM`, complex solution requests to `STRONG`, and images to `VISION`. Set each `*_MODEL` and optional `*_PROVIDER` (`openai` or `nvidia`) in `.env`. Requests fall back to deterministic lookup when keys/models are unavailable. The chosen route appears in the UI. No provider keys were available in the development environment, so paid routes have not been live-tested.
+
+CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG require a configured vision model. Scanned PDFs still need image conversion before vision processing.
+
+Official purchase conditions are shown from [EKT's information page](https://ekt.kz/about/information/); product-specific ETA and minimum order remain unknown.
 
 ## Demo
 
