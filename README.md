@@ -16,7 +16,7 @@ The catalog sync fetches up to `CATALOG_PAGES` pages (20 products each), stops w
 
 Model routing uses no model for exact lookups and product facts. Short requests route to `CHEAP`, comparisons to `MEDIUM`, complex solution requests to `STRONG`, and images to `VISION`. Set each `*_MODEL` and optional `*_PROVIDER` (`openai` or `nvidia`) in `.env`. Requests fall back to deterministic lookup when keys/models are unavailable. The chosen route appears in the UI. No provider keys were available in the development environment, so paid routes have not been live-tested.
 
-CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG require a configured vision model. Scanned PDFs still need image conversion before vision processing.
+CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG and scanned PDFs use a configured vision model; for scanned PDFs the first page is rendered for the vision route.
 
 Official purchase conditions are shown from [EKT's information page](https://ekt.kz/about/information/); product-specific ETA and minimum order remain unknown.
 
