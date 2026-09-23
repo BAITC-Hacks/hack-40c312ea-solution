@@ -76,3 +76,4 @@ def parse_file(filename: str, data: bytes) -> list[dict]:
     else:
         raise ValueError('Unsupported file type')
     return _text_requirements(lines)
+
