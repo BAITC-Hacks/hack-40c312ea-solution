@@ -48,7 +48,7 @@ class Engine:
                 pass
 
     async def sync(self) -> int:
-        pages = max(1, min(int(os.getenv('CATALOG_PAGES', '25')), 250))
+        pages = max(1, min(int(os.getenv('CATALOG_PAGES', '750')), 1000))
         items = await self.ekt.pages(pages)
         if items:
             self.catalog = items
