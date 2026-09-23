@@ -30,7 +30,7 @@ document.getElementById('file').onchange = async () => {
       button.onclick = async () => {
         try {
           const prepared = await api('/api/cart/prepare-batch', {items: selected});
-          if (!confirm(prepared.message + '\nОфициальная корзина EKT не изменится.')) return;
+          if (!await askCartConfirmation(prepared.message)) return;
           const confirmed = await api('/api/cart/confirm-batch', {confirmation_token: prepared.confirmation_token});
           document.getElementById('cart').textContent = confirmed.cart.map(item => `${item.quantity} × ${item.name}`).join(' · ');
           const link = document.createElement('a');
@@ -49,3 +49,4 @@ document.getElementById('file').onchange = async () => {
     bubble('Файл не обработан: ' + error.message);
   }
 };
+
