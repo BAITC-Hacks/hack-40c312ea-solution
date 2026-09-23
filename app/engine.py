@@ -16,6 +16,12 @@ def tokens(text: str) -> str:
     return re.sub(r'[^\w]+', ' ', text.casefold()).strip()
 
 
+def requested_electrical(text: str) -> tuple[str | None, str | None]:
+    amps = re.search(r'\b(\d{1,4})\s*[aа](?!\w)', text, re.I)
+    poles = re.search(r'\b([1-4])\s*(?:p|п|ф|пол)', text, re.I)
+    return (amps.group(1) if amps else None, poles.group(1) if poles else None)
+
+
 def attributes(product: dict) -> dict:
     p = product.get('properties') or {}
     return {
@@ -66,11 +72,17 @@ class Engine:
                 pass
         q = tokens(query)
         words = [w for w in q.split() if len(w) > 1]
+        requested_amps, requested_poles = requested_electrical(query)
         ranked = []
         for item in self.catalog:
             hay = tokens(f"{item.get('name','')} {item.get('article','')} {item.get('url','')}")
             score = fuzz.WRatio(q, hay)
             score += 12 * sum(w in hay for w in words)
+            item_amps, item_poles = requested_electrical(item.get('name', ''))
+            if requested_amps and item_amps:
+                score += 80 if requested_amps == item_amps else -100
+            if requested_poles and item_poles:
+                score += 50 if requested_poles == item_poles else -70
             if score > 30:
                 ranked.append((score, item))
         ranked.sort(key=lambda x: x[0], reverse=True)
@@ -80,10 +92,18 @@ class Engine:
 
     async def solution(self, query: str, mode: str = 'best') -> dict:
         products = await self.search(query)
+        requested_amps, requested_poles = requested_electrical(query)
+        for p in products:
+            p['_match_warnings'] = []
+            found_amps, found_poles = requested_electrical(p.get('name', ''))
+            if requested_amps and found_amps and requested_amps != found_amps:
+                p['_match_warnings'].append(f'Ток отличается: требуется {requested_amps} А, товар {found_amps} А.')
+            if requested_poles and found_poles and requested_poles != found_poles:
+                p['_match_warnings'].append(f'Полюса отличаются: требуется {requested_poles}, товар {found_poles}.')
         if mode == 'cheapest':
-            products.sort(key=lambda p: (p.get('price') is None, p.get('price') or 10**12))
+            products.sort(key=lambda p: (bool(p['_match_warnings']), p.get('price') is None, p.get('price') or 10**12))
         elif mode == 'available':
-            products.sort(key=lambda p: -(p.get('quantity') or 0))
+            products.sort(key=lambda p: (bool(p['_match_warnings']), -(p.get('quantity') or 0)))
         cards = []
         for p in products:
             cards.append({
@@ -91,7 +111,8 @@ class Engine:
                 'price': p.get('price'), 'quantity': p.get('quantity'),
                 'url': p.get('url'), 'image': p.get('image'),
                 'description': p.get('description'), 'attributes': attributes(p),
-                'warnings': conflict_warnings(p), 'stores': [s for s in p.get('stores', []) if s.get('quantity', 0) > 0],
+                'warnings': conflict_warnings(p) + p['_match_warnings'], 'stores': [s for s in p.get('stores', []) if s.get('quantity', 0) > 0],
+                'compatibility': 'uncertain' if conflict_warnings(p) else ('incompatible' if p['_match_warnings'] else 'uncertain'),
                 'certificate': None,
             })
-        return {'query': query, 'mode': mode, 'products': cards, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Срок доставки API не предоставляет.']}
+        return {'query': query, 'mode': mode, 'products': cards, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
