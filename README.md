@@ -27,6 +27,7 @@ Official purchase conditions are shown from [EKT's information page](https://ekt
 - Upload a `.csv` or `.xlsx` specification.
 - Compare Cheapest / Available / Best fit.
 - Add the proposed set to the local cart with a separate confirmation.
+- Say `добавь всё в корзину`, then `да, добавь` in the next message. The first message only prepares a local cart action; stock is rechecked before the second one applies it.
 - Ask for `Нужно собрать защиту двигателя 11 кВт, 380 В, желательно Schneider`; the result should request the motor's nameplate current before claiming compatibility.
 
 The source API fields verified on 2026-09-23: list `page`, `per_page`, `count`, `items`; item `id`, `name`, `article`, `price`, `image`, `url`, `offers`; detail adds `description`, `quantity`, `stores`, `properties`. Some source fields conflict: product 515291 says 160 A in its name/description while `NOMINALNYY_TOK` says 250 A. The agent must surface this uncertainty.
