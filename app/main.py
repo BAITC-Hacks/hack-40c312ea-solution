@@ -134,8 +134,19 @@ async def upload(file: UploadFile = File(...)):
             lines, route = await router.read_image(data, file.content_type or 'image/jpeg')
             requirements = [{'description': line, 'quantity': 1} for line in lines]
         else:
-            requirements = parse_file(file.filename or '', data)
-            route = 'DIRECT'
+            try:
+                requirements = parse_file(file.filename or '', data)
+                route = 'DIRECT'
+            except ValueError as exc:
+                if not (file.filename or '').lower().endswith('.pdf') or 'no text layer' not in str(exc):
+                    raise
+                import pymupdf
+                document = pymupdf.open(stream=data, filetype='pdf')
+                if not document.page_count:
+                    raise ValueError('Empty PDF') from exc
+                png = document[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5)).tobytes('png')
+                lines, route = await router.read_image(png, 'image/png')
+                requirements = [{'description': line, 'quantity': 1} for line in lines]
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     results = []
