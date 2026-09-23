@@ -4,3 +4,4 @@ __pycache__/
 .venv/
 catalog_cache.json
 uploads/
+.deps/
