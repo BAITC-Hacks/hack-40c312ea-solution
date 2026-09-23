@@ -113,11 +113,17 @@ class Engine:
             self.syncing = False
 
     async def search(self, query: str, limit: int = 6) -> list[dict]:
-        match = re.search(r'\b(?:id[=:\s]*)?(\d{5,7})\b', query, re.I)
+        match = re.fullmatch(r'\s*(?:id[=:\s]*)?(\d{5,7})\s*', query, re.I)
         if match:
             try:
                 detail = await self.ekt.detail(int(match.group(1)))
                 if detail.get('id'):
+                    if detail.get('quantity') == 0 and detail.get('name') and detail['name'] != query:
+                        alternatives = await self.search(detail['name'], limit=limit)
+                        amps, poles = requested_electrical(detail['name'])
+                        relevant = [p for p in alternatives if p['id'] != detail['id'] and (p.get('quantity') or 0) > 0
+                                    and requested_electrical(p.get('name', '')) == (amps, poles)]
+                        return [detail] + relevant[:3]
                     return [detail]
             except Exception:
                 pass
@@ -203,4 +209,3 @@ class Engine:
                 'certificate': certificate, 'certificate_status': certificate_status,
             })
         return {'query': query, 'mode': mode, 'products': cards, 'selected': cards[0] if cards else None, 'total': cards[0]['price'] if cards else None, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
-

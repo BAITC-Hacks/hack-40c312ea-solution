@@ -30,7 +30,11 @@ document.getElementById('file').onchange = async () => {
       button.onclick = async () => {
         try {
           const prepared = await api('/api/cart/prepare-batch', {items: selected});
-          if (!await askCartConfirmation(prepared.message)) return;
+          if (!await askCartConfirmation(prepared.message)) {
+            await api('/api/cart/cancel', {confirmation_token: prepared.confirmation_token});
+            bubble('Добавление комплекта отменено.');
+            return;
+          }
           const confirmed = await api('/api/cart/confirm-batch', {confirmation_token: prepared.confirmation_token});
           document.getElementById('cart').textContent = confirmed.cart.map(item => `${item.quantity} × ${item.name}`).join(' · ');
           const link = document.createElement('a');
@@ -49,4 +53,3 @@ document.getElementById('file').onchange = async () => {
     bubble('Файл не обработан: ' + error.message);
   }
 };
-

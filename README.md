@@ -1,5 +1,12 @@
 # EKT AI Engineer — HackAlem MVP
 
+## Storefront feature update
+
+Новая витрина с чатом доступна на `/`, прежний интерфейс — на `/engine`.
+Семь функций, схема API, сценарий показа и ограничения описаны в [FEATURES.md](FEATURES.md).
+Для автономной демонстрации укажите `DEMO_MODE=1` в `.env`; товары будут явно помечены как вымышленные.
+Корзина остаётся локальной, обращения менеджеру — демозаявками без отправки в CRM.
+
 AI Sales Engineer for ekt.kz: search real products, verify live details, compare alternatives, assemble a solution and add items to a prototype cart only after explicit confirmation.
 
 ## Run
@@ -34,8 +41,31 @@ The source API fields verified on 2026-09-23: list `page`, `per_page`, `count`, 
 
 ## Limits
 
+### Cart confirmation patch
+
+Single-item and batch cart actions share an expiring server-side confirmation gate.
+The preview contains the exact items, quantities, prices, total and stock scope.
+Confirmations expire after 120 seconds and are scoped to the current session and
+action type. Price or purchase-condition changes require a fresh confirmation.
+Repeated confirmations are rejected with HTTP 400 without applying the action again.
+All cart mutations for one session are serialized, including mixed single/batch
+requests. `POST /api/cart/cancel` revokes a pending token. The existing endpoint
+names and response fields remain available.
+Chat commands such as `добавь 2 в корзину` preserve the requested quantity.
+
+An optional integer `store_id` is accepted for each cart line. When omitted,
+stock is checked across warehouses and the preview explicitly says no warehouse
+was chosen. The gate also checks `KRATNOST_MIN` when supplied by EKT. Stock checks
+do not reserve goods: this is still a local prototype, with no official EKT cart
+mutation. The session-ID header remains a bearer credential; full authentication,
+session expiry and deployment across multiple workers require separate work.
+
+Run the offline regression checks with `python -m unittest discover -s tests -v`.
+They substitute EKT responses and do not call a paid model or place real orders.
+
+### Existing prototype limits
+
 - The browser's cart is a local session prototype. The official EKT checkout link opens the real site but does not transfer local items.
 - The supplied EKT API provides catalog and detail endpoints, not its entire internal database or an order-writing contract.
 - Compatibility checks cover identifiable ratings in product names and exposed properties; they cannot certify electrical design.
 - If EKT omits a certificate link, minimum order or item-specific ETA, the UI reports that information as unavailable.
-

@@ -12,7 +12,7 @@ class EKTClient:
     def __init__(self):
         self.user = os.getenv('EKT_USER', 'apiuser')
         self.password = os.getenv('EKT_PASSWORD', '')
-        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=20, follow_redirects=True)
+        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=20, follow_redirects=False)
 
     async def _get(self, url: str, params: dict) -> dict[str, Any]:
         for attempt in range(3):
@@ -51,4 +51,3 @@ class EKTClient:
 
     async def close(self):
         await self.client.aclose()
-
