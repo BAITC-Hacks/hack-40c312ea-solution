@@ -4,6 +4,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any
 
 from rapidfuzz import fuzz
@@ -22,10 +23,45 @@ def product_kind(text: str) -> str | None:
     value = text.casefold()
     if re.search(r'ламп\w* приобретаются отдельно|гирлянд|\bспот\b', value):
         return 'luminaire'
-    for kind, pattern in [('rcd', r'узо|авдт|диф'), ('contactor', r'контактор|пускатель'), ('relay', r'реле'), ('breaker', r'автомат|\bав\b|авт\.\s*выкл'), ('holder', r'патрон'), ('gland', r'кабельн\w* ввод|сальник'), ('cable', r'кабель|провод'), ('enclosure', r'щит|шкаф'), ('luminaire', r'светильник|прожектор|люстр|\b(?:дво|дпо|лпо|лво|спо|дсп|дпп)\b'), ('strip', r'лент'), ('signal', r'ламп\w*\s+(?:коммутац|сигн)|сиг(?:нальн\w*|\.)?\s*ламп'), ('industrial_lamp', r'\b(?:дрв|дри|днат|дрл)\b'), ('lamp', r'\bламп[аыуе]|\bled\s+(?:[acgp]\d{2,3}|mr\d{2}|gu\d{2})\b|\bшам(?:дар|ы)?\b'), ('socket', r'розетк'), ('switch', r'выключател'), ('terminal', r'клемм|наконечник'), ('rail', r'din|дин.рейк')]:
+    for kind, pattern in [
+        ('rcd', r'\bузо\b|\bавдт|\bдиф'),
+        ('breaker', r'\bавтомат|\bав\b|\bавт\.\s*выкл'),
+        ('contactor', r'\bконтактор|\bпускатель|\bкми[-\s]|\bкмэ[-\s]'),
+        ('relay', r'\bреле'), ('holder', r'\bпатрон'),
+        ('gland', r'кабельн\w* ввод|\bсальник'),
+        ('luminaire', r'\bсветильник|\bпрожектор|\bлюстр|\b(?:дво|дпо|лпо|лво|спо|дсп|дпп)\b'),
+        ('enclosure', r'\bщит(?:ок|а|ы|ов|ки)?\b|\bшкаф|\bщр[внсп]|\bвру[-\s]|\bщо[-\s]'),
+        ('terminal', r'\bклемм|\bнаконечник|\bгильза'),
+        ('cable', r'\bкабел[ьи]\b|\bпровод(?:а|ов)?\b|\bа?ввг\w*|\b(?:пвс|nym|nyy|кг|шввп|пугв)\b'),
+        ('strip', r'\bлент'),
+        ('signal', r'ламп\w*\s+(?:коммутац|сигн)|сиг(?:нальн\w*|\.)?\s*ламп'),
+        ('industrial_lamp', r'\b(?:дрв|дри|днат|дрл)\b'),
+        ('lamp', r'\bламп[аыуе]|\bled\s+(?:[acgp]\d{2,3}|mr\d{2}|gu\d{2})\b|\bшам(?:дар|ы)?\b'),
+        ('data_socket', r'(?:розетк.*(?:\brj[- ]?\d|\btel\b|\btv\b|keystone|информацион)|(?:телефон|компьютерн).*розетк)'),
+        ('socket', r'\bрозетк'), ('switch', r'\bвыключател'), ('rail', r'\bdin\b|дин.рейк')]:
         if re.search(pattern, value):
             return kind
     return None
+
+
+def catalog_kind(product: dict) -> str | None:
+    """Use the item's own purpose and source category, not incidental mention of a device."""
+    name = product.get('name', '').casefold()
+    if re.search(r'\b(?:фильтр|решетка|решётка|катушка|бирка|рамка|накладка|крышка|заглушка|дверь|дверца|крепление|кронштейн|драйвер|замок|подставка)\b|цоколь для щ|панель для счетчика|корпус\s+(?:настенн\w*\s+)?розет|кабель[- ]канал|установка пожаротушения', name):
+        return 'accessory'
+    kind = product_kind(name)
+    # The noun before "for" describes the item; an incidental compatible device
+    # must not turn a key, adapter or spare part into that device.
+    if ' для ' in name and product_kind(name.split(' для ', 1)[0]) is None:
+        return 'accessory'
+    directory = urlsplit(product.get('url') or '').path.rsplit('/', 2)[0]
+    if re.search(r'/[^/]*(?:aksessuar|zamki_dlya|komplektuyushch)[^/]*/', directory + '/'):
+        return kind if kind in {'terminal', 'gland', 'rail', 'holder'} else 'accessory'
+    if '/kabel_provod/' in directory and kind in {None, 'cable'}:
+        return 'cable'
+    if '/shkafy_shchity/' in directory and kind in {None, 'enclosure', 'contactor'}:
+        return 'enclosure'
+    return kind
 
 
 def requested_electrical(text: str) -> tuple[str | None, str | None]:
@@ -145,7 +181,7 @@ class Engine:
                         amps, poles = requested_electrical(detail['name'])
                         relevant = [p for p in alternatives if p['id'] != detail['id'] and (p.get('quantity') or 0) > 0
                                     and (amps or poles) and requested_electrical(p.get('name', '')) == (amps, poles)
-                                    and product_kind(p.get('name', '')) == product_kind(detail['name'])
+                                    and catalog_kind(p) == catalog_kind(detail)
                                     and not conflict_warnings(p)]
                         for p in relevant:
                             p['_alternative_for'] = detail['id']
@@ -167,10 +203,13 @@ class Engine:
         requested_amps, requested_poles = requested_electrical(query)
         brand = requested_brand(query)
         cable_size = requested_cable_size(query)
+        cable_family = re.search(r'\b(а?ввг\w*|пвс|nym|nyy|шввп|пугв)\b', query, re.I) if kind == 'cable' else None
         ranked = []
         for item in self.catalog:
             hay = tokens(f"{item.get('name','')} {item.get('article','')} {item.get('url','')}")
-            if kind and product_kind(item.get('name', '')) != kind:
+            if kind and catalog_kind(item) != kind:
+                continue
+            if cable_family and not re.search(r'\b' + re.escape(cable_family.group(1)), item.get('name', ''), re.I):
                 continue
             if not kind and not any(w in hay for w in words):
                 continue
@@ -197,7 +236,7 @@ class Engine:
         result = []
         for (score, source), detail in zip(picked, details):
             if isinstance(detail, dict) and detail.get('id') == source['id']:
-                if kind and product_kind(detail.get('name', '')) != kind:
+                if kind and catalog_kind(detail) != kind:
                     continue
                 detail['_search_score'] = score
                 result.append(detail)
@@ -220,7 +259,7 @@ class Engine:
                 if not actual_base or normalize_base(actual_base) != normalize_base(requested_base.group(1)):
                     p['_match_warnings'].append('Цоколь отличается от запроса или не подтверждён каталогом.')
             kind = product_kind(query)
-            if kind and product_kind(p.get('name', '')) != kind:
+            if kind and catalog_kind(p) != kind:
                 p['_match_warnings'].append('Назначение товара отличается от запроса.')
             found_amps, found_poles = requested_electrical(p.get('name', ''))
             for wanted, actual, label in [(requested_amps, attributes(p).get('current'), 'Ток'), (requested_poles, attributes(p).get('poles'), 'Полюса')]:
@@ -240,6 +279,8 @@ class Engine:
                 p['_match_warnings'].append(f'Сечение/число жил отличаются: требуется {cable_size[0]}×{cable_size[1]}, товар {found_size[0]}×{found_size[1]}.')
             elif cable_size and not found_size:
                 p['_match_warnings'].append('Сечение/число жил не подтверждены каталогом.')
+            if cable_size and '+' in p.get('name', '') and '+' not in query:
+                p['_match_warnings'].append('Есть дополнительная группа жил; состав кабеля отличается от указанного запроса.')
         if mode == 'cheapest':
             products.sort(key=lambda p: (bool(p['_match_warnings']), not bool(p.get('quantity')), p.get('price') is None, p.get('price') or 10**12))
         elif mode == 'expensive':

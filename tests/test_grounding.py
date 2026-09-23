@@ -239,6 +239,36 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
         result = await main.engine.solution('лампы E14')
         self.assertTrue(all(p['warnings'] for p in result['products']))
 
+    async def test_shared_retrieval_and_price_modes_across_categories(self):
+        for pid, name in [(920001, 'Розетка белая 16A'), (920002, 'Контактор 25A'), (920003, 'Реле времени')]:
+            self.products.append({'id':pid, 'name':name, 'article':str(pid), 'price':1000, 'quantity':10, 'properties':{}, 'stores':[]})
+        main.engine.catalog = copy.deepcopy(self.products)
+        scenarios = [('автомат 1P 16A',900005), ('кабель 3x2.5',900006), ('щит для офиса',900001),
+                     ('розетки для кухни',920001), ('контактор для оборудования',920002), ('реле времени',920003)]
+        for query, expected in scenarios:
+            for mode in ['best','cheapest','expensive','available']:
+                with self.subTest(query=query,mode=mode):
+                    d = await self.ask(query,mode=mode)
+                    self.assertEqual([p['id'] for p in d['products']], [expected])
+                    self.assertFalse(d['products'][0]['warnings'])
+
+    def test_source_categories_and_accessories_have_distinct_purposes(self):
+        from app.engine import catalog_kind
+        cases = [({'name':'ВВГнг 3х2,5', 'url':'https://ekt.kz/catalog/kabel_provod/power/item/'},'cable'),
+                 ({'name':'ЩРВ 12', 'url':''},'enclosure'),
+                 ({'name':'Решетка защитная для светильника'},'accessory'),
+                 ({'name':'Кабель-канал 100x50'},'accessory'),
+                 ({'name':'Корпус настенной розетки для Keystone'},'accessory'),
+                 ({'name':'Розетка TEL с/у'},'data_socket'),
+                 ({'name':'Замок для дверцы', 'url':'https://ekt.kz/catalog/shkafy_shchity/zamki_dlya_shchitov/item/'},'accessory'),
+                 ({'name':'Подставка для ЩРС 5'},'accessory'),
+                 ({'name':'Ключ для шкафов и систем запирания'},'accessory'),
+                 ({'name':'Розетка информационная RJ-45 UTP'},'data_socket'),
+                 ({'name':'АВР 100А (Контактор)', 'url':'https://ekt.kz/catalog/shkafy_shchity/avr/item/'},'enclosure')]
+        for product,expected in cases:
+            with self.subTest(product=product):
+                self.assertEqual(catalog_kind(product),expected)
+
 
 if __name__ == '__main__':
     unittest.main()
