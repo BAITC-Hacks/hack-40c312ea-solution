@@ -22,6 +22,11 @@ def requested_electrical(text: str) -> tuple[str | None, str | None]:
     return (amps.group(1) if amps else None, poles.group(1) if poles else None)
 
 
+def requested_brand(text: str) -> str | None:
+    lower = text.casefold()
+    return next((brand for brand in ('schneider', 'legrand', 'abb', 'iek', 'chint', 'dekraft', 'ekt') if re.search(r'\b' + brand + r'\b', lower)), None)
+
+
 def attributes(product: dict) -> dict:
     p = product.get('properties') or {}
     return {
@@ -54,11 +59,31 @@ class Engine:
                 pass
 
     async def sync(self) -> int:
-        pages = max(1, min(int(os.getenv('CATALOG_PAGES', '750')), 1000))
-        items = await self.ekt.pages(pages)
-        if items:
-            self.catalog = items
-            CACHE.write_text(json.dumps(items, ensure_ascii=False), encoding='utf-8')
+        pages = max(1, min(int(os.getenv('CATALOG_PAGES', '800')), 1000))
+        first_id = None
+        seen = {}
+        for start in range(1, pages + 1, 10):
+            batch = await asyncio.gather(*(self.ekt.page(i) for i in range(start, min(pages + 1, start + 10))), return_exceptions=True)
+            finished = False
+            for page in batch:
+                if not isinstance(page, dict):
+                    continue
+                items = page.get('items') or []
+                if not items:
+                    finished = True
+                    continue
+                if first_id is None:
+                    first_id = items[0].get('id')
+                elif items[0].get('id') == first_id:
+                    finished = True
+                    continue
+                seen.update({item['id']: item for item in items})
+            if seen:
+                self.catalog = list(seen.values())
+            if finished:
+                break
+        if self.catalog:
+            CACHE.write_text(json.dumps(self.catalog, ensure_ascii=False), encoding='utf-8')
         return len(self.catalog)
 
     async def search(self, query: str, limit: int = 6) -> list[dict]:
@@ -73,6 +98,7 @@ class Engine:
         q = tokens(query)
         words = [w for w in q.split() if len(w) > 1]
         requested_amps, requested_poles = requested_electrical(query)
+        brand = requested_brand(query)
         ranked = []
         for item in self.catalog:
             hay = tokens(f"{item.get('name','')} {item.get('article','')} {item.get('url','')}")
@@ -83,16 +109,24 @@ class Engine:
                 score += 80 if requested_amps == item_amps else -100
             if requested_poles and item_poles:
                 score += 50 if requested_poles == item_poles else -70
+            if brand:
+                score += 150 if brand in hay else -80
             if score > 30:
                 ranked.append((score, item))
         ranked.sort(key=lambda x: x[0], reverse=True)
-        picked = [item for _, item in ranked[:limit]]
-        details = await asyncio.gather(*(self.ekt.detail(int(p['id'])) for p in picked), return_exceptions=True)
-        return [d for d in details if isinstance(d, dict) and d.get('id')]
+        picked = ranked[:limit]
+        details = await asyncio.gather(*(self.ekt.detail(int(p['id'])) for _, p in picked), return_exceptions=True)
+        result = []
+        for (score, _), detail in zip(picked, details):
+            if isinstance(detail, dict) and detail.get('id'):
+                detail['_search_score'] = score
+                result.append(detail)
+        return result
 
     async def solution(self, query: str, mode: str = 'best') -> dict:
         products = await self.search(query)
         requested_amps, requested_poles = requested_electrical(query)
+        brand = requested_brand(query)
         for p in products:
             p['_match_warnings'] = []
             found_amps, found_poles = requested_electrical(p.get('name', ''))
@@ -104,6 +138,10 @@ class Engine:
             products.sort(key=lambda p: (bool(p['_match_warnings']), p.get('price') is None, p.get('price') or 10**12))
         elif mode == 'available':
             products.sort(key=lambda p: (bool(p['_match_warnings']), -(p.get('quantity') or 0)))
+        elif mode == 'brand':
+            products.sort(key=lambda p: (bool(p['_match_warnings']), brand not in p.get('name', '').casefold() if brand else False, -(p.get('quantity') or 0), -p.get('_search_score', 0)))
+        else:
+            products.sort(key=lambda p: (bool(p['_match_warnings']), not bool(p.get('quantity')), -p.get('_search_score', 0)))
         cards = []
         for p in products:
             cards.append({
@@ -113,6 +151,7 @@ class Engine:
                 'description': p.get('description'), 'attributes': attributes(p),
                 'warnings': conflict_warnings(p) + p['_match_warnings'], 'stores': [s for s in p.get('stores', []) if s.get('quantity', 0) > 0],
                 'compatibility': 'uncertain' if conflict_warnings(p) else ('incompatible' if p['_match_warnings'] else 'uncertain'),
+                'reason': 'Совпадают запрошенные параметры в названии; проверяйте свойства и предупреждения.' if not p['_match_warnings'] else 'Есть расхождение с запросом; используйте как аналог только после проверки.',
                 'certificate': None,
             })
         return {'query': query, 'mode': mode, 'products': cards, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
