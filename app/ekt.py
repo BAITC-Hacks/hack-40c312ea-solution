@@ -51,3 +51,4 @@ class EKTClient:
 
     async def close(self):
         await self.client.aclose()
+
