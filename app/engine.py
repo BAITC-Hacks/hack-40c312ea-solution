@@ -164,8 +164,12 @@ class Engine:
             found_amps, found_poles = requested_electrical(p.get('name', ''))
             if requested_amps and found_amps and requested_amps != found_amps:
                 p['_match_warnings'].append(f'Ток отличается: требуется {requested_amps} А, товар {found_amps} А.')
+            elif requested_amps and not found_amps and not attributes(p).get('current'):
+                p['_match_warnings'].append('Номинальный ток товара не указан; соответствие не подтверждено.')
             if requested_poles and found_poles and requested_poles != found_poles:
                 p['_match_warnings'].append(f'Полюса отличаются: требуется {requested_poles}, товар {found_poles}.')
+            elif requested_poles and not found_poles and not attributes(p).get('poles'):
+                p['_match_warnings'].append('Число полюсов товара не указано; соответствие не подтверждено.')
             found_size = requested_cable_size(p.get('name', ''))
             if cable_size and found_size and cable_size != found_size:
                 p['_match_warnings'].append(f'Сечение/число жил отличаются: требуется {cable_size[0]}×{cable_size[1]}, товар {found_size[0]}×{found_size[1]}.')
