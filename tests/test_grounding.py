@@ -324,3 +324,120 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
     async def test_category_filter_applies_to_search(self):
         r = await self.client.get('/api/catalog?q=лампы&category=breaker')
         self.assertEqual(r.json()['products'], [])
+
+
+    async def test_positive_need_and_bulbs_reported_phrases(self):
+        for text in ['мне нужно чтобы ты подобрал для меня лампочки', 'подбери для меня лампочки',
+                     'мне нужно подобрать лампу', 'помоги с подбором лампочек']:
+            with self.subTest(text=text):
+                d = await self.ask(text)
+                self.assertNotEqual(d.get('action'), 'declined')
+                self.assertEqual({p['id'] for p in d['products']}, {910001, 910002, 910003})
+                self.assertFalse(main.sessions[self.sid].get('purchase_declined', False))
+                self.assertNotEqual(main.sessions[self.sid].get('recommendations_enabled'), False)
+
+    async def test_positive_request_does_not_cancel_confirmation(self):
+        await self.ask('900005')
+        await self.ask('добавь в корзину')
+        state = main.sessions[self.sid]
+        token = state['pending_chat_cart']['token']
+        from app.features import conversation_intent
+        self.assertIsNone(conversation_intent('мне нужно посмотреть характеристики', state, 'ru'))
+        self.assertEqual(state['cart_actions'][token]['status'], 'pending')
+        self.assertEqual(state['pending_chat_cart']['token'], token)
+
+    def test_refusal_is_complete_intent_not_word_fragment_or_preference(self):
+        from app.query_text import explicit_purchase_refusal
+        for text in ['не нужно', 'Нет, спасибо, не надо.', 'мне ничего не нужно',
+                     'не буду покупать', 'я не хочу покупать', 'отказываюсь от покупки',
+                     'сатып алмаймын', 'керек емес']:
+            self.assertTrue(explicit_purchase_refusal(text), text)
+        for text in ['мне нужно', 'мне нужно реле', 'мне нужно чтобы ты подобрал лампочки',
+                     'мне не нужно дорогое, подбери дешевле', 'не надо добавлять, только покажи лампы',
+                     'нужен кабель, доставка не нужна']:
+            self.assertFalse(explicit_purchase_refusal(text), text)
+
+    async def test_explicit_refusal_still_cancels_pending_cart(self):
+        await self.ask('900005')
+        await self.ask('добавь в корзину')
+        token = main.sessions[self.sid]['pending_chat_cart']['token']
+        d = await self.ask('мне ничего не нужно')
+        self.assertEqual(d['action'], 'declined')
+        self.assertEqual(main.sessions[self.sid]['cart_actions'][token]['status'], 'cancelled')
+        self.assertEqual(main.sessions[self.sid]['cart'], [])
+
+    def test_colloquial_nouns_preserve_constraints_and_categories(self):
+        from app.engine import product_kind
+        from app.query_text import normalize_catalog_terms
+        for text, kind in [('лампочкой E27 7Вт 3000К', 'lamp'), ('лампочек E14', 'lamp'),
+                           ('розеточки 16A', 'socket'), ('проводочки 3x2.5', 'cable'),
+                           ('кабельки 3x2.5', 'cable'), ('автоматики Schneider 3P 32A', 'breaker')]:
+            self.assertEqual(product_kind(text), kind, text)
+            self.assertEqual(normalize_catalog_terms(text).split()[1:], text.split()[1:])
+        for text in ['ламповый усилитель', 'шампанское', 'кабельканал']:
+            self.assertEqual(normalize_catalog_terms(text), text)
+
+    async def test_colloquial_search_works_without_llm_in_other_categories(self):
+        for text, expected in [('мне нужно подобрать автоматик 1P 16A', 900005),
+                               ('подбери проводочки 3x2.5', 900006)]:
+            d = await self.ask(text)
+            self.assertEqual([p['id'] for p in d['products']], [expected])
+            self.assertFalse(d['products'][0]['warnings'])
+
+
+    async def test_ai_order_understands_pair_second_and_only_prepares(self):
+        await self.ask('лампочки')
+        cards = main.sessions[self.sid]['last_result']['products']
+        second = cards[1]['id']
+        fake = json.dumps({'action': 'prepare_cart', 'items': [{'product_id': second, 'quantity': 2}]})
+        with patch.object(main.router, 'config', return_value=('test', 'test', '', '')), patch.object(main.router, 'complete', new=AsyncMock(return_value=(fake, 'CHEAP test'))) as model:
+            d = await self.ask('беру пару из второго варианта')
+            model.assert_awaited_once()
+        self.assertEqual(d['action'], 'cart_confirmation')
+        self.assertEqual(main.sessions[self.sid]['cart'], [])
+        d = await self.ask('да, добавь')
+        self.assertEqual(d['cart'][0]['id'], second)
+        self.assertEqual(d['cart'][0]['quantity'], 2)
+
+    async def test_ai_order_rejects_invented_ids_and_quantities(self):
+        from app.order_intent import interpret_order
+        cards = (await self.ask('лампочки'))['products']
+        invalid = [{'product_id': 999999, 'quantity': 1}, {'product_id': cards[0]['id'], 'quantity': True},
+                   {'product_id': cards[0]['id'], 'quantity': -1}, {'product_id': cards[0]['id'], 'quantity': 10001}]
+        for item in invalid:
+            with patch.object(main.router, 'config', return_value=('test', 'test', '', '')), patch.object(main.router, 'complete', new=AsyncMock(return_value=(json.dumps({'action': 'prepare_cart', 'items': [item]}), 'CHEAP test'))):
+                lines, route = await interpret_order('беру первый вариант', cards, main.router)
+                self.assertIsNone(lines)
+        self.assertEqual(main.sessions[self.sid]['cart'], [])
+
+    async def test_ai_order_cannot_skip_live_stock_check(self):
+        await self.ask('лампочки')
+        first = main.sessions[self.sid]['last_result']['products'][0]['id']
+        with patch.object(main.router, 'config', return_value=('test', 'test', '', '')), patch.object(main.router, 'complete', new=AsyncMock(return_value=(json.dumps({'action': 'prepare_cart', 'items': [{'product_id': first, 'quantity': 1000}]}), 'CHEAP test'))):
+            d = await self.ask('беру тысячу первого варианта')
+        self.assertEqual(d['action'], 'cart_error')
+        self.assertEqual(main.sessions[self.sid]['cart'], [])
+
+    async def test_ai_not_invoked_for_negated_order(self):
+        from app.order_intent import interpret_order
+        cards = (await self.ask('лампочки'))['products']
+        with patch.object(main.router, 'config', return_value=('test', 'test', '', '')), patch.object(main.router, 'complete', new_callable=AsyncMock) as model:
+            lines, route = await interpret_order('не добавляй эти варианты', cards, main.router)
+            model.assert_not_awaited()
+            self.assertIsNone(lines)
+
+
+    async def test_ai_order_cannot_change_explicit_quantity(self):
+        from app.order_intent import interpret_order
+        cards = (await self.ask('лампочки'))['products']
+        response = json.dumps({'action':'prepare_cart','items':[{'product_id':cards[0]['id'],'quantity':1}]})
+        with patch.object(main.router, 'config', return_value=('test', 'test', '', '')), patch.object(main.router, 'complete', new=AsyncMock(return_value=(response, 'CHEAP test'))):
+            for text in ['добавь 0 в корзину', 'добавь 2 в корзину']:
+                lines, _ = await interpret_order(text, cards, main.router)
+                self.assertIsNone(lines)
+
+    async def test_order_for_new_category_does_not_add_previous_product(self):
+        await self.ask('лампочки')
+        d = await self.ask('добавь первую розетку в корзину')
+        self.assertEqual(d['action'], 'cart_unavailable')
+        self.assertEqual(main.sessions[self.sid]['cart'], [])

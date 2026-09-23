@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from .i18n import language, localize_result, tr
 from .security import audit, redact
+from .query_text import explicit_purchase_refusal
 
 
 class LanguageChoice(BaseModel):
@@ -100,7 +101,7 @@ async def recommendations(engine, product_id, state, lang):
 
 def conversation_intent(text, state, lang):
     lower = text.lower().strip()
-    if any(word in lower for word in ('не буду покупать', 'не хочу покупать', 'не надо', 'не нужно', 'отказываюсь', 'сатып алмаймын', 'керек емес')):
+    if explicit_purchase_refusal(text):
         state['purchase_declined'] = True
         state['recommendations_enabled'] = False
         state.pop('pending_chat_cart', None)

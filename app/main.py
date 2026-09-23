@@ -28,6 +28,7 @@ from .upload_guard import validate_file, parse_isolated
 from .integration import install_integration
 from .grounding import CatalogUnavailable, input_guard, product_fact, offer_manager, service_failure
 from .advisor import advise
+from .order_intent import interpret_order
 from .logistics import settings as logistics_settings, annotate as annotate_logistics, CITIES
 
 app = FastAPI(title='EKT AI Engineer')
@@ -397,6 +398,14 @@ async def query_core(body: Query, x_session_id: str | None = None):
             except HTTPException as exc:
                 return {'session_id': sid, 'action': 'cart_error', 'message': str(exc.detail), 'products': [], 'events': ['Stock recheck failed'], 'warnings': [], 'route': 'DIRECT'}
             return {'session_id': sid, 'action': 'cart_added', 'message': 'Позиции добавлены в локальную корзину. Откройте её по ссылке ниже. Заказ в EKT не отправлен.', 'cart': confirmed['cart'], 'cart_url': '/cart', 'official_cart_url': confirmed['official_cart_url'], 'products': [], 'events': ['Live stock rechecked', 'Local cart updated'], 'warnings': [], 'route': 'DIRECT'}
+    proposed, order_route = await interpret_order(text, (state.get('last_result') or {}).get('products', []), router)
+    if proposed:
+        prepared = await prepare_batch(BatchRequest(items=[CartLine(**item) for item in proposed]), sid)
+        state['pending_chat_cart'] = {'token': prepared['confirmation_token'], 'at': time.monotonic()}
+        return {'session_id': sid, 'action': 'cart_confirmation',
+                'message': prepared['message'] + ' Ответьте «да, добавь» в следующем сообщении.',
+                'products': [], 'events': ['Order intent interpreted', 'Live stock checked', 'Awaiting explicit confirmation'],
+                'warnings': [], 'route': order_route}
     if re.search(r'\b(?:добавь|добавить|положи)\b.*\bкорзин', lower):
         state.pop('pending_chat_cart', None)
         requested_quantity = None
@@ -420,6 +429,8 @@ async def query_core(body: Query, x_session_id: str | None = None):
         else:
             cards = previous.get('products') or []
             selected = (cards[ordinal] if ordinal < len(cards) else None) if ordinal is not None else previous.get('selected')
+            if selected and product_kind(text) and product_kind(text) != catalog_kind(selected):
+                selected = None
             lines = [CartLine(product_id=selected['id'], quantity=requested_quantity or 1)] if selected and not selected.get('warnings') else []
         if not lines:
             return {'session_id': sid, 'action': 'cart_unavailable', 'message': 'Пока нет проверенного комплекта для корзины. Уточните характеристики и выберите подходящие товары.', 'products': [], 'events': ['Cart request checked'], 'warnings': [], 'route': 'DIRECT'}

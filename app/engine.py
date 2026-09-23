@@ -11,6 +11,7 @@ from typing import Any
 from rapidfuzz import fuzz
 
 from .ekt import EKTClient
+from .query_text import normalize_catalog_terms
 from .grounding import CatalogUnavailable
 
 CACHE = Path(__file__).parent.parent / 'catalog_cache.json'
@@ -21,7 +22,7 @@ def tokens(text: str) -> str:
 
 
 def product_kind(text: str) -> str | None:
-    value = text.casefold()
+    value = normalize_catalog_terms(text).casefold()
     if re.search(r'ламп\w* приобретаются отдельно|гирлянд|\bспот\b', value):
         return 'luminaire'
     for kind, pattern in [
@@ -37,7 +38,7 @@ def product_kind(text: str) -> str | None:
         ('strip', r'\bлент'),
         ('signal', r'ламп\w*\s+(?:коммутац|сигн)|сиг(?:нальн\w*|\.)?\s*ламп'),
         ('industrial_lamp', r'\b(?:дрв|дри|днат|дрл)\b'),
-        ('lamp', r'\bламп[аыуе]|\bled\s+(?:[acgp]\d{2,3}|mr\d{2}|gu\d{2})\b|\bшам(?:дар|ы)?\b'),
+        ('lamp', r'\bламп(?:а|ы|у|е|ой|ам|ами|ах)?\b|\bled\s+(?:[acgp]\d{2,3}|mr\d{2}|gu\d{2})\b|\bшам(?:дар|ы)?\b'),
         ('data_socket', r'(?:розетк.*(?:\brj[- ]?\d|\btel\b|\btv\b|keystone|информацион)|(?:телефон|компьютерн).*розетк)'),
         ('socket', r'\bрозетк'), ('switch', r'\bвыключател'), ('rail', r'\bdin\b|дин.рейк')]:
         if re.search(pattern, value):
@@ -208,11 +209,12 @@ class Engine:
                 return [detail] if detail.get('id') == int(match.group(1)) else []
             except Exception as exc:
                 raise CatalogUnavailable() from exc
-        q = tokens(query)
         exact = next((p for p in self.catalog if str(p.get('article', '')).casefold() == query.strip().casefold()), None)
         if exact:
             return await self.search(str(exact['id']), limit)
-        ignored = {'мне', 'нужен', 'нужна', 'нужны', 'нужно', 'для', 'или', 'это', 'есть', 'какой', 'какая', 'найди', 'подбери', 'хочу', 'пожалуйста', 'товар', 'нужное', 'the', 'for', 'могу', 'купить'}
+        query = normalize_catalog_terms(query)
+        q = tokens(query)
+        ignored = {'меня', 'чтобы', 'ты', 'подобрал', 'подобрать', 'помоги', 'мне', 'нужен', 'нужна', 'нужны', 'нужно', 'для', 'или', 'это', 'есть', 'какой', 'какая', 'найди', 'подбери', 'хочу', 'пожалуйста', 'товар', 'нужное', 'the', 'for', 'могу', 'купить'}
         words = [w for w in q.split() if len(w) > 1 and w not in ignored]
         kind = product_kind(query)
         requested_amps, requested_poles = requested_electrical(query)
