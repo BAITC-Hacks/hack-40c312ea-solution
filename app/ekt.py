@@ -26,14 +26,20 @@ class EKTClient:
 
     async def pages(self, count: int) -> list[dict[str, Any]]:
         result = []
+        first_id = None
         for start in range(1, count + 1, 5):
             batch = await asyncio.gather(*(self.page(i) for i in range(start, min(count + 1, start + 5))), return_exceptions=True)
             for page in batch:
                 if isinstance(page, dict):
-                    result.extend(page.get('items', []))
+                    items = page.get('items', [])
+                    if items and first_id is None:
+                        first_id = items[0].get('id')
+                    if result and items and items[0].get('id') == first_id:
+                        return list({item['id']: item for item in result}.values())
+                    result.extend(items)
             if any(isinstance(page, dict) and not page.get('items') for page in batch):
                 break
-        return result
+        return list({item['id']: item for item in result}.values())
 
     async def close(self):
         await self.client.aclose()
