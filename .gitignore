@@ -3,5 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 catalog_cache.json
+model_usage.json
 uploads/
 .deps/
+
