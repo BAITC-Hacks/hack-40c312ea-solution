@@ -2,6 +2,8 @@ import os
 import re
 import secrets
 import asyncio
+import copy
+import time
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,9 +12,10 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 load_dotenv()
-from .engine import Engine  # noqa: E402
+from .engine import Engine, requested_brand  # noqa: E402
 from .files import parse_file
 from .model_router import ModelRouter
+from .agent import handle_query
 
 app = FastAPI(title='EKT AI Engineer')
 engine = Engine()
@@ -82,7 +85,7 @@ async def cart_script():
 
 @app.get('/api/status')
 async def status():
-    return {'catalog_items': len(engine.catalog), 'ekt_configured': bool(os.getenv('EKT_PASSWORD'))}
+    return {'catalog_items': len(engine.catalog), 'ekt_configured': bool(os.getenv('EKT_PASSWORD')), 'syncing': engine.syncing, 'last_synced': engine.last_synced, 'model_usage': router.ledger}
 
 
 @app.get('/api/conditions')
@@ -102,25 +105,74 @@ async def sync():
 
 @app.on_event('startup')
 async def startup():
-    if os.getenv('EKT_PASSWORD') and not engine.catalog:
-        import asyncio
-        app.state.sync_task = asyncio.create_task(engine.sync())
+    if os.getenv('EKT_PASSWORD'):
+        async def refresh_loop():
+            while True:
+                try:
+                    await engine.sync()
+                except Exception:
+                    engine.syncing = False
+                await asyncio.sleep(max(1, int(os.getenv('CATALOG_REFRESH_HOURS', '12'))) * 3600)
+        app.state.sync_task = asyncio.create_task(refresh_loop())
+
+
+def rerank_cached(result: dict, mode: str, brand: str | None) -> dict:
+    updated = copy.deepcopy(result)
+    cards = updated.get('products', [])
+    if mode == 'cheapest':
+        cards.sort(key=lambda p: (bool(p['warnings']), not bool(p['quantity']), p['price'] is None, p['price'] or 10**12))
+    elif mode == 'available':
+        cards.sort(key=lambda p: (bool(p['warnings']), -(p['quantity'] or 0)))
+    elif mode == 'brand' and brand:
+        cards.sort(key=lambda p: (bool(p['warnings']), brand not in p['name'].casefold(), not bool(p['quantity']), p['price'] or 10**12))
+    else:
+        cards.sort(key=lambda p: (bool(p['warnings']), not bool(p['quantity']), -(p.get('match_score') or 0)))
+    updated['mode'] = mode
+    updated['selected'] = cards[0] if cards else None
+    updated['total'] = cards[0]['price'] if cards else None
+    updated['route'] = 'DIRECT · verified shortlist cache'
+    updated['events'] = updated.get('events', []) + ['Solution re-ranked from verified candidates']
+    return updated
 
 
 @app.post('/api/query')
-async def query(body: Query):
+async def query(body: Query, x_session_id: str | None = Header(default=None)):
     if not body.text.strip():
         raise HTTPException(400, 'Enter a query')
-    if not engine.catalog and hasattr(app.state, 'sync_task') and not re.fullmatch(r'\s*(?:id\s*[=:]?\s*)?\d{5,7}\s*', body.text, re.I):
+    sid, state = session(x_session_id)
+    original_text = body.text.strip()[:500]
+    text = original_text
+    mode = body.mode
+    lower = text.casefold()
+    if state.get('last_query'):
+        if 'сделай дешевле' in lower or lower in {'дешевле', 'подешевле'}:
+            text, mode = state['last_query'], 'cheapest'
+        elif lower in {'в наличии', 'только в наличии', 'быстрее'}:
+            text, mode = state['last_query'], 'available'
+        elif lower.startswith('оставь ') or lower.startswith('предпочтительный бренд '):
+            brand = text.split()[-1]
+            text = re.sub(r'\b(?:schneider|legrand|abb|iek|chint|dekraft|ekt)\b', '', state['last_query'], flags=re.I).strip() + ' ' + brand
+            mode = 'brand'
+        else:
+            replacement = re.search(r'замени\s+(\w+)\s+на\s+(\w+)', text, re.I)
+            if replacement:
+                text = re.sub(re.escape(replacement.group(1)), replacement.group(2), state['last_query'], flags=re.I)
+                mode = 'brand'
+    if not engine.catalog and hasattr(app.state, 'sync_task') and not re.fullmatch(r'\s*(?:id\s*[=:]?\s*)?\d{5,7}\s*', text, re.I):
         import asyncio
         for _ in range(100):
             if engine.catalog or app.state.sync_task.done():
                 break
             await asyncio.sleep(0.1)
-    search_text, route = await router.normalize(body.text.strip()[:500])
-    result = await engine.solution(search_text, body.mode)
-    result['query'] = body.text.strip()[:500]
-    result['route'] = route
+    if state.get('last_query') == text and state.get('last_result') and time.monotonic() - state.get('last_verified_at', 0) < 120 and not state['last_result'].get('solution_items'):
+        result = rerank_cached(state['last_result'], mode, requested_brand(text))
+    else:
+        result = await handle_query(text, mode, engine, router)
+    result['session_id'] = sid
+    result['user_message'] = original_text
+    state['last_query'] = text
+    state['last_result'] = copy.deepcopy(result)
+    state['last_verified_at'] = time.monotonic()
     return result
 
 
@@ -131,8 +183,7 @@ async def upload(file: UploadFile = File(...)):
         raise HTTPException(413, 'File exceeds 10 MB')
     try:
         if (file.filename or '').lower().endswith(('.jpg', '.jpeg', '.png')):
-            lines, route = await router.read_image(data, file.content_type or 'image/jpeg')
-            requirements = [{'description': line, 'quantity': 1} for line in lines]
+            requirements, route = await router.read_image(data, file.content_type or 'image/jpeg')
         else:
             try:
                 requirements = parse_file(file.filename or '', data)
@@ -145,8 +196,7 @@ async def upload(file: UploadFile = File(...)):
                 if not document.page_count:
                     raise ValueError('Empty PDF') from exc
                 png = document[0].get_pixmap(matrix=pymupdf.Matrix(1.5, 1.5)).tobytes('png')
-                lines, route = await router.read_image(png, 'image/png')
-                requirements = [{'description': line, 'quantity': 1} for line in lines]
+                requirements, route = await router.read_image(png, 'image/png')
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     results = []
@@ -235,3 +285,4 @@ async def confirm(body: CartRequest, x_session_id: str | None = Header(default=N
 async def cart(x_session_id: str | None = Header(default=None)):
     sid, state = session(x_session_id)
     return {'session_id': sid, 'cart': state['cart'], 'cart_type': 'local_prototype'}
+
