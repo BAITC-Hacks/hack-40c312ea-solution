@@ -144,6 +144,29 @@ async def query(body: Query, x_session_id: str | None = Header(default=None)):
     text = original_text
     mode = body.mode
     lower = text.casefold()
+    if re.fullmatch(r'(?:да|подтверждаю|да[,! ]+добавь|добавляй)[.! ]*', lower):
+        pending = state.pop('pending_chat_cart', None)
+        if pending and time.monotonic() - pending['at'] < 120:
+            try:
+                confirmed = await confirm_batch(BatchConfirm(confirmation_token=pending['token']), sid)
+            except HTTPException as exc:
+                return {'session_id': sid, 'action': 'cart_error', 'message': str(exc.detail), 'products': [], 'events': ['Stock recheck failed'], 'warnings': [], 'route': 'DIRECT'}
+            return {'session_id': sid, 'action': 'cart_added', 'message': 'Позиции добавлены в локальную корзину. Официальную корзину EKT потребуется заполнить на сайте.', 'cart': confirmed['cart'], 'official_cart_url': confirmed['official_cart_url'], 'products': [], 'events': ['Live stock rechecked', 'Local cart updated'], 'warnings': [], 'route': 'DIRECT'}
+    if re.search(r'\b(?:добавь|добавить|положи)\b.*\bкорзин', lower):
+        state.pop('pending_chat_cart', None)
+        previous = state.get('last_result') or {}
+        chosen_items = previous.get('solution_items')
+        if chosen_items:
+            lines = [CartLine(product_id=item['chosen']['id'], quantity=item['requirement']['quantity']) for item in chosen_items if item.get('chosen')]
+        else:
+            selected = previous.get('selected')
+            lines = [CartLine(product_id=selected['id'], quantity=1)] if selected and not selected.get('warnings') else []
+        if not lines:
+            return {'session_id': sid, 'action': 'cart_unavailable', 'message': 'Пока нет проверенного комплекта для корзины. Уточните характеристики и выберите подходящие товары.', 'products': [], 'events': ['Cart request checked'], 'warnings': [], 'route': 'DIRECT'}
+        prepared = await prepare_batch(BatchRequest(items=lines), sid)
+        state['pending_chat_cart'] = {'token': prepared['confirmation_token'], 'at': time.monotonic()}
+        return {'session_id': sid, 'action': 'cart_confirmation', 'message': prepared['message'] + ' Ответьте «да, добавь» в следующем сообщении.', 'products': [], 'events': ['Live stock checked', 'Awaiting explicit confirmation'], 'warnings': [], 'route': 'DIRECT'}
+    state.pop('pending_chat_cart', None)
     if state.get('last_query'):
         if 'сделай дешевле' in lower or lower in {'дешевле', 'подешевле'}:
             text, mode = state['last_query'], 'cheapest'
