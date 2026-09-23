@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 load_dotenv()
 from .engine import Engine  # noqa: E402
+from .files import parse_file
 
 app = FastAPI(title='EKT AI Engineer')
 engine = Engine()
@@ -48,6 +49,11 @@ async def script():
     return FileResponse(STATIC / 'app.js')
 
 
+@app.get('/upload.js')
+async def upload_script():
+    return FileResponse(STATIC / 'upload.js')
+
+
 @app.get('/api/status')
 async def status():
     return {'catalog_items': len(engine.catalog), 'ekt_configured': bool(os.getenv('EKT_PASSWORD'))}
@@ -58,11 +64,36 @@ async def sync():
     return {'catalog_items': await engine.sync()}
 
 
+@app.on_event('startup')
+async def startup():
+    if os.getenv('EKT_PASSWORD') and not engine.catalog:
+        import asyncio
+        app.state.sync_task = asyncio.create_task(engine.sync())
+
+
 @app.post('/api/query')
 async def query(body: Query):
     if not body.text.strip():
         raise HTTPException(400, 'Enter a query')
+    if not engine.catalog and hasattr(app.state, 'sync_task'):
+        await app.state.sync_task
     return await engine.solution(body.text.strip()[:500], body.mode)
+
+
+@app.post('/api/upload')
+async def upload(file: UploadFile = File(...)):
+    data = await file.read(10_000_001)
+    if len(data) > 10_000_000:
+        raise HTTPException(413, 'File exceeds 10 MB')
+    try:
+        requirements = parse_file(file.filename or '', data)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    results = []
+    for req in requirements[:12]:
+        solution = await engine.solution(req['description'])
+        results.append({'requirement': req, 'status': 'candidate' if solution['products'] else 'unavailable', 'products': solution['products'][:3]})
+    return {'requirements': len(requirements), 'results': results, 'processed': len(results)}
 
 
 @app.post('/api/cart/prepare')
