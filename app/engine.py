@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -68,6 +69,8 @@ class Engine:
     def __init__(self):
         self.ekt = EKTClient()
         self.catalog: list[dict[str, Any]] = []
+        self.syncing = False
+        self.last_synced = None
         if CACHE.exists():
             try:
                 self.catalog = json.loads(CACHE.read_text(encoding='utf-8'))
@@ -75,32 +78,39 @@ class Engine:
                 pass
 
     async def sync(self) -> int:
-        pages = max(1, min(int(os.getenv('CATALOG_PAGES', '800')), 1000))
-        first_id = None
-        seen = {}
-        for start in range(1, pages + 1, 10):
-            batch = await asyncio.gather(*(self.ekt.page(i) for i in range(start, min(pages + 1, start + 10))), return_exceptions=True)
-            finished = False
-            for page in batch:
-                if not isinstance(page, dict):
-                    continue
-                items = page.get('items') or []
-                if not items:
-                    finished = True
-                    continue
-                if first_id is None:
-                    first_id = items[0].get('id')
-                elif items[0].get('id') == first_id:
-                    finished = True
-                    continue
-                seen.update({item['id']: item for item in items})
-            if seen:
-                self.catalog = list(seen.values())
-            if finished:
-                break
-        if self.catalog:
-            CACHE.write_text(json.dumps(self.catalog, ensure_ascii=False), encoding='utf-8')
-        return len(self.catalog)
+        if self.syncing:
+            return len(self.catalog)
+        self.syncing = True
+        try:
+            pages = max(1, min(int(os.getenv('CATALOG_PAGES', '800')), 1000))
+            first_id = None
+            seen = {}
+            for start in range(1, pages + 1, 10):
+                batch = await asyncio.gather(*(self.ekt.page(i) for i in range(start, min(pages + 1, start + 10))), return_exceptions=True)
+                finished = False
+                for page in batch:
+                    if not isinstance(page, dict):
+                        continue
+                    items = page.get('items') or []
+                    if not items:
+                        finished = True
+                        continue
+                    if first_id is None:
+                        first_id = items[0].get('id')
+                    elif items[0].get('id') == first_id:
+                        finished = True
+                        continue
+                    seen.update({item['id']: item for item in items})
+                if seen:
+                    self.catalog = list(seen.values())
+                if finished:
+                    break
+            if self.catalog:
+                CACHE.write_text(json.dumps(self.catalog, ensure_ascii=False), encoding='utf-8')
+                self.last_synced = datetime.now(timezone.utc).isoformat()
+            return len(self.catalog)
+        finally:
+            self.syncing = False
 
     async def search(self, query: str, limit: int = 6) -> list[dict]:
         match = re.search(r'\b(?:id[=:\s]*)?(\d{5,7})\b', query, re.I)
@@ -178,6 +188,7 @@ class Engine:
                 missing_fields.append('poles')
             cards.append({
                 'id': p['id'], 'name': p.get('name'), 'article': p.get('article'),
+                'match_score': p.get('_search_score'),
                 'price': p.get('price'), 'quantity': p.get('quantity'),
                 'url': p.get('url'), 'image': p.get('image'),
                 'description': p.get('description'), 'attributes': attrs,
@@ -188,3 +199,4 @@ class Engine:
                 'certificate': certificate, 'certificate_status': certificate_status,
             })
         return {'query': query, 'mode': mode, 'products': cards, 'selected': cards[0] if cards else None, 'total': cards[0]['price'] if cards else None, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}
+
