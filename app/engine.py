@@ -1,4 +1,5 @@
 import asyncio
+import html
 import json
 import os
 import re
@@ -112,14 +113,28 @@ def conflict_warnings(product: dict) -> list[str]:
 
 
 def certificate_info(product: dict) -> tuple[str | None, str]:
-    for key, value in (product.get('properties') or {}).items():
-        if any(marker in key.casefold() for marker in ('sertif', 'certif', 'сертифик')):
-            values = value if isinstance(value, list) else [value]
-            for candidate in values:
-                if isinstance(candidate, str) and candidate.startswith('https://'):
-                    return candidate, 'Ссылка на сертификат указана в API'
-            return None, 'Поле сертификата есть, но ссылка не предоставлена'
-    return None, 'Сертификат не указан в API'
+    from urllib.parse import urljoin, urlsplit
+    def urls(value):
+        if isinstance(value, str):
+            candidate = urljoin('https://ekt.kz/', value.strip())
+            if value.strip().startswith(('https://', '/')) and urlsplit(candidate).scheme == 'https':
+                yield candidate
+        elif isinstance(value, list):
+            for item in value:
+                yield from urls(item)
+        elif isinstance(value, dict):
+            for key in ('url', 'href', 'src', 'file', 'value', 'VALUE', 'SRC'):
+                if key in value:
+                    yield from urls(value[key])
+    present = False
+    for container in (product, product.get('properties') or {}):
+        for key, value in container.items():
+            if any(marker in str(key).casefold() for marker in ('sertif', 'certif', 'сертифик')):
+                present = True
+                found = next(urls(value), None)
+                if found:
+                    return found, 'Ссылка на сертификат указана в API'
+    return None, ('Поле сертификата есть, но ссылка не предоставлена' if present else 'Сертификат не указан в API')
 
 
 class Engine:
@@ -305,7 +320,7 @@ class Engine:
             if requested_poles and not attrs['poles']:
                 missing_fields.append('poles')
             cards.append({
-                'id': p['id'], 'name': p.get('name'), 'article': p.get('article'),
+                'id': p['id'], 'name': html.unescape(p.get('name') or ''), 'article': p.get('article'),
                 'match_score': p.get('_search_score'),
                 'price': p.get('price'), 'quantity': p.get('quantity'),
                 'url': p.get('url'), 'image': p.get('image'),

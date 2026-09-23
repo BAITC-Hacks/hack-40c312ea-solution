@@ -13,10 +13,10 @@ from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, ConfigDict, Field, StrictInt
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictBool
 
 load_dotenv()
-from .engine import Engine, requested_brand, product_kind, CACHE  # noqa: E402
+from .engine import Engine, requested_brand, product_kind, catalog_kind, CACHE  # noqa: E402
 from .files import parse_file
 from .model_router import ModelRouter
 from .agent import handle_query
@@ -28,6 +28,7 @@ from .upload_guard import validate_file, parse_isolated
 from .integration import install_integration
 from .grounding import CatalogUnavailable, input_guard, product_fact, offer_manager, service_failure
 from .advisor import advise
+from .logistics import settings as logistics_settings, annotate as annotate_logistics, CITIES
 
 app = FastAPI(title='EKT AI Engineer')
 engine = Engine()
@@ -102,7 +103,7 @@ async def embed_demo():
 
 @app.get('/engine')
 async def original_interface():
-    return FileResponse(STATIC / 'index.html')
+    return FileResponse(STATIC / 'store.html')
 
 
 @app.get('/store.js')
@@ -153,6 +154,25 @@ async def cart_script():
 @app.get('/api/status')
 async def status():
     return {'catalog_items': len(engine.catalog), 'ekt_configured': bool(os.getenv('EKT_PASSWORD')), 'syncing': engine.syncing, 'last_synced': engine.last_synced, 'demo_mode': os.getenv('DEMO_MODE') == '1'}
+
+
+class LogisticsChoice(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    enabled: StrictBool
+    city: Literal['Алматы', 'Астана', 'Шымкент', 'Караганда'] = 'Алматы'
+
+
+@app.get('/api/session/logistics')
+async def get_logistics(x_session_id: str | None = Header(default=None)):
+    sid, state = session(x_session_id)
+    return {'session_id': sid, **logistics_settings(state)}
+
+
+@app.post('/api/session/logistics')
+async def set_logistics(body: LogisticsChoice, x_session_id: str | None = Header(default=None)):
+    sid, state = session(x_session_id)
+    state['demo_logistics'], state['delivery_city'] = body.enabled, body.city
+    return {'session_id': sid, **logistics_settings(state)}
 
 
 @app.get('/api/conditions')
@@ -216,9 +236,9 @@ async def catalog(q: str = '', limit: int = 12, page: int = 1, category: str = '
         raise HTTPException(422, 'Слишком длинный запрос.')
     if q:
         result = await engine.solution(search_phrase(q))
-        return {'products': result['products'][:max(1, min(limit, 24))], 'verified': True}
+        return {'products': [p for p in result['products'] if not category or catalog_kind(p) == category][:max(1, min(limit, 24))], 'verified': True}
     limit, page = max(1, min(limit, 24)), max(1, min(page, 1000))
-    source = [p for p in engine.catalog if not category or product_kind(p.get('name', '')) == category]
+    source = [p for p in engine.catalog if not category or catalog_kind(p) == category]
     # A useful first screen, with the rest of the real catalog available through pagination/search.
     if not category:
         preferred = [33723, 33705, 33714]
@@ -266,8 +286,10 @@ async def query_impl(body: Query, x_session_id: str | None = None):
     history = state.setdefault('history', [])
     guard = input_guard(body.text, lang)
     history.append({'role': 'user', 'text': '[private input omitted]' if guard and guard['action'] == 'privacy_guard' else redact(body.text)[:1000]})
-    speed_request = bool(state.get('last_query') and re.search(r'быстрее|скорее|жылдам|тезірек', body.text, re.I))
-    intent = guard or (None if speed_request else conversation_intent(body.text, state, lang))
+    speed_request = bool(state.get('last_query') and re.search(r'быстр|скор|жылдам|тезірек', body.text, re.I))
+    cheaper_request = bool(state.get('last_query') and re.search(r'деш[её]в|арзан', body.text, re.I))
+    demo_delivery_request = bool(logistics_settings(state)['enabled'] and state.get('last_query') and re.search(r'достав|жеткіз|склад|қойма', body.text, re.I))
+    intent = guard or (None if (speed_request or cheaper_request or demo_delivery_request) else conversation_intent(body.text, state, lang))
     if not intent:
         try:
             intent = await product_fact(body.text, state, engine, lang)
@@ -283,7 +305,9 @@ async def query_impl(body: Query, x_session_id: str | None = None):
         result = {'session_id': sid, 'products': [], 'events': [], 'warnings': [], 'route': 'DIRECT', **intent}
     else:
         phrase = search_phrase(body.text) if lang == 'kk' else body.text
-        if speed_request:
+        if cheaper_request:
+            phrase = 'дешевле'
+        elif speed_request or demo_delivery_request:
             phrase = 'быстрее'
         if lang == 'kk':
             if re.fullmatch(r'\s*(иә|иә[, ]+қос|растау)\s*[.!]?\s*', body.text.lower()):
@@ -307,8 +331,8 @@ async def query_impl(body: Query, x_session_id: str | None = None):
             except CatalogUnavailable:
                 state.pop('last_result', None)
                 result = {'session_id': sid, **service_failure(lang)}
-            except HTTPException:
-                result = {'session_id': sid, **service_failure(lang)}
+            except HTTPException as exc:
+                result = {'session_id': sid, 'action': 'cart_error', 'message': str(exc.detail), 'products': [], 'route': 'DIRECT'}
         if not result.get('action'):
             cards = result.get('products', [])
             result['message'] = tr('found', lang, n=len(cards)) if cards else tr('empty', lang)
@@ -319,7 +343,7 @@ async def query_impl(body: Query, x_session_id: str | None = None):
                 result['message'] += ' ' + result['comparison_message']
             if 'fallback' in result.get('route', ''):
                 result['message'] += ' ИИ-модель недоступна; выполнен поиск по каталогу.' if lang == 'ru' else ' AI моделі қолжетімсіз; каталог бойынша іздеу орындалды.'
-            if result.get('mode') == 'available':
+            if (result.get('mode') == 'available' or speed_request) and not logistics_settings(state)['enabled']:
                 result['message'] += ' Порядок по наличию, а не сроку доставки: индивидуальный ETA неизвестен, уточните его у менеджера.' if lang == 'ru' else 'Реті қор бойынша, жеткізу мерзімі бойынша емес. Жеке мерзім белгісіз, менеджерден нақтылаңыз.'
                 result['handoff_available'] = True
             if result.get('mode') == 'expensive':
@@ -330,6 +354,9 @@ async def query_impl(body: Query, x_session_id: str | None = None):
         rows = pending.get('snapshot', [])
         total = sum(p['line_total'] for p in rows)
         result['message'] = 'Себетке қосуды растаңыз:\n' + '\n'.join(f"{p['quantity']} × {p['name']} — {p['line_total']:,.2f} ₸" for p in rows) + f'\nБарлығы: {total:,.2f} ₸. «Иә, қос» деп жауап беріңіз.'
+    result = annotate_logistics(result, state, body.text, lang)
+    if result.get('products') and not result.get('action'):
+        state['last_result'] = copy.deepcopy(result)
     result = localize_result(result, lang)
     if result.get('action') in {'cart_error', 'cart_unavailable', 'payment'}:
         result['handoff_available'] = True
@@ -381,7 +408,8 @@ async def query_core(body: Query, x_session_id: str | None = None):
                         'products': [], 'events': [], 'warnings': [], 'route': 'DIRECT'}
             requested_quantity = int(quantity_text)
         previous = state.get('last_result') or {}
-        chosen_items = previous.get('solution_items')
+        ordinal = next((i for pattern, i in [(r'перв|бірінші', 0), (r'втор|екінші', 1), (r'треть|үшінші', 2), (r'четв[её]рт', 3)] if re.search(pattern, lower)), None)
+        chosen_items = previous.get('solution_items') if ordinal is None else None
         if chosen_items:
             lines = [CartLine(product_id=item['chosen']['id'], quantity=item['requirement']['quantity']) for item in chosen_items if item.get('chosen')]
             if requested_quantity is not None:
@@ -390,7 +418,8 @@ async def query_core(body: Query, x_session_id: str | None = None):
                             'products': [], 'events': [], 'warnings': [], 'route': 'DIRECT'}
                 lines[0].quantity = requested_quantity
         else:
-            selected = previous.get('selected')
+            cards = previous.get('products') or []
+            selected = (cards[ordinal] if ordinal < len(cards) else None) if ordinal is not None else previous.get('selected')
             lines = [CartLine(product_id=selected['id'], quantity=requested_quantity or 1)] if selected and not selected.get('warnings') else []
         if not lines:
             return {'session_id': sid, 'action': 'cart_unavailable', 'message': 'Пока нет проверенного комплекта для корзины. Уточните характеристики и выберите подходящие товары.', 'products': [], 'events': ['Cart request checked'], 'warnings': [], 'route': 'DIRECT'}
@@ -399,7 +428,7 @@ async def query_core(body: Query, x_session_id: str | None = None):
         return {'session_id': sid, 'action': 'cart_confirmation', 'message': prepared['message'] + ' Ответьте «да, добавь» в следующем сообщении.', 'products': [], 'events': ['Live stock checked', 'Awaiting explicit confirmation'], 'warnings': [], 'route': 'DIRECT'}
     state.pop('pending_chat_cart', None)
     if state.get('last_query'):
-        if re.search(r'дешевле|подешевле|арзанырақ', lower):
+        if re.search(r'деш[её]в|арзан', lower):
             text, mode = state['last_query'], 'cheapest'
         elif re.search(r'подороже|дороже|қымбатырақ', lower):
             text, mode = state['last_query'], 'expensive'

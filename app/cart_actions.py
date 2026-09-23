@@ -1,3 +1,4 @@
+import html
 """Server-owned, expiring confirmations for the session-local demo cart."""
 
 import asyncio
@@ -94,7 +95,8 @@ async def _snapshot(lines: list[dict], state: dict, detail) -> list[dict]:
             if store_already + qty > store_stock:
                 raise HTTPException(409, f'Недостаточно товара {pid} на выбранном складе.')
             store_name = str(store.get('name') or store_id)
-        result.append({'id': pid, 'name': str(product.get('name') or pid),
+        result.append({'id': pid, 'name': html.unescape(str(product.get('name') or pid)),
+                       'image': product.get('image'), 'article': product.get('article'),
                        'quantity': qty, 'price': float(price),
                        'line_total': float(price * qty), 'store_id': store_id,
                        'store_name': store_name, 'purchase_multiple': str(step)})

@@ -16,6 +16,8 @@ from app.model_router import ModelRouter
 class GroundingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         main.sessions.clear()
+        self.env = patch.dict(os.environ, {'DEMO_LOGISTICS': '0'})
+        self.env.start()
         self.original = main.engine.ekt, main.engine.catalog
         self.products = copy.deepcopy(PRODUCTS)
         for pid, name, price in [(910001, 'Лампа LED E27 10W', 500), (910002, 'Лампа LED E27 10W', 1200),
@@ -37,6 +39,7 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self):
         await self.client.aclose()
         self.config.stop()
+        self.env.stop()
         main.engine.ekt, main.engine.catalog = self.original
 
     async def ask(self, text, **extra):
@@ -270,5 +273,54 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(catalog_kind(product),expected)
 
 
-if __name__ == '__main__':
-    unittest.main()
+
+    async def test_reported_cheapest_shipping_then_first_cart(self):
+        await self.ask('мне нужны лампы для кафешки')
+        main.sessions[self.sid]['last_result']['selected'] = None
+        d = await self.ask('мне нужны максимально дешевые варианты и чтобы доставка в Алмату была в быстрый срок')
+        self.assertEqual(d['mode'], 'cheapest')
+        self.assertEqual([p['price'] for p in d['products']], [500, 800, 1200])
+        self.assertNotIn('demo_logistics', d['products'][0])
+        main.sessions[self.sid]['last_result']['selected'] = None
+        first = d['products'][0]['id']
+        d = await self.ask('ладно добавь самую первую лампу мне в корзину')
+        self.assertEqual(d['action'], 'cart_confirmation')
+        self.assertEqual(main.sessions[self.sid]['cart'], [])
+        d = await self.ask('да, добавь')
+        self.assertEqual(d['action'], 'cart_added')
+        self.assertEqual(d['cart'][0]['id'], first)
+
+    async def test_virtual_logistics_never_changes_real_cart_stock(self):
+        await self.client.post('/api/session/logistics', headers=self.headers, json={'enabled': True, 'city': 'Астана'})
+        d = await self.ask('лампы для кафе')
+        self.assertIn('ДЕМО', d['message'])
+        for p in d['products']:
+            self.assertEqual(p['quantity'], 7)
+            self.assertEqual(p['demo_logistics']['source'], 'simulated')
+        d = await self.ask('самые дешевые и быстрее в Алмату')
+        self.assertEqual(d['logistics']['city'], 'Алматы')
+        scores = [(p['demo_logistics']['destination']['days_max'], p['price']) for p in d['products']]
+        self.assertEqual(scores, sorted(scores))
+        first = d['products'][0]['id']
+        r = await self.client.post('/api/cart/prepare', headers=self.headers, json={'product_id': first, 'quantity': 8})
+        self.assertEqual(r.status_code, 409)
+
+    async def test_cart_photo_edit_and_confirmation(self):
+        self.products[6]['image'] = 'https://ekt.kz/upload/lamp.jpg'
+        d = (await self.client.post('/api/cart/prepare', headers=self.headers, json={'product_id': 910001, 'quantity': 1})).json()
+        r = await self.client.post('/api/cart/confirm', headers=self.headers, json={'product_id': 910001, 'quantity': 1, 'confirmation_token': d['confirmation_token']})
+        self.assertEqual(r.json()['cart'][0]['image'], self.products[6]['image'])
+        d = (await self.client.post('/api/cart/prepare-edit', headers=self.headers, json={'index': 0, 'quantity': 3})).json()
+        self.assertEqual(main.sessions[self.sid]['cart'][0]['quantity'], 1)
+        r = await self.client.post('/api/cart/confirm-edit', headers=self.headers, json={'confirmation_token': d['confirmation_token']})
+        self.assertEqual(r.json()['cart'][0]['quantity'], 3)
+        self.assertEqual(r.json()['cart'][0]['line_total'], 1500)
+
+    async def test_nested_certificate_relative_path(self):
+        self.products[4]['certificates'] = [{'file': {'SRC': '/upload/example.pdf'}}]
+        d = await self.ask('сертификат 900005')
+        self.assertEqual(d['products'][0]['certificate'], 'https://ekt.kz/upload/example.pdf')
+
+    async def test_category_filter_applies_to_search(self):
+        r = await self.client.get('/api/catalog?q=лампы&category=breaker')
+        self.assertEqual(r.json()['products'], [])
