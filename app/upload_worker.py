@@ -5,6 +5,10 @@ import json
 import sys
 from pathlib import Path
 
+local_dependencies = Path(__file__).resolve().parents[1] / '.deps'
+if local_dependencies.is_dir():
+    sys.path.insert(0, str(local_dependencies))
+
 from files import parse_file
 
 

@@ -17,6 +17,14 @@ def tokens(text: str) -> str:
     return re.sub(r'[^\w]+', ' ', text.casefold()).strip()
 
 
+def product_kind(text: str) -> str | None:
+    value = text.casefold()
+    for kind, pattern in [('rcd', r'узо|авдт|диф'), ('contactor', r'контактор|пускатель'), ('relay', r'реле'), ('breaker', r'автомат|\bав\b|авт\.\s*выкл'), ('cable', r'кабель|провод'), ('enclosure', r'щит|шкаф')]:
+        if re.search(pattern, value):
+            return kind
+    return None
+
+
 def requested_electrical(text: str) -> tuple[str | None, str | None]:
     amps = re.search(r'\b(\d{1,4})\s*[aа](?!\w)', text, re.I)
     poles = re.search(r'\b([1-4])\s*(?:p|п|ф|пол)', text, re.I)
@@ -46,7 +54,7 @@ def attributes(product: dict) -> dict:
 
 def conflict_warnings(product: dict) -> list[str]:
     name = product.get('name', '')
-    current = attributes(product).get('current') or ''
+    current = str(attributes(product).get('current') or '')
     named = re.search(r'(\d+)\s*[аa](?![\w])', name, re.I)
     field = re.search(r'(\d+)\s*[аa](?![\w])', current, re.I)
     if named and field and named.group(1) != field.group(1):
@@ -101,11 +109,12 @@ class Engine:
                         finished = True
                         continue
                     seen.update({item['id']: item for item in items})
-                if seen:
+                if seen and not self.catalog:
                     self.catalog = list(seen.values())
                 if finished:
                     break
-            if self.catalog:
+            if seen:
+                self.catalog = list(seen.values())
                 CACHE.write_text(json.dumps(self.catalog, ensure_ascii=False), encoding='utf-8')
                 self.last_synced = datetime.now(timezone.utc).isoformat()
             return len(self.catalog)
@@ -117,17 +126,25 @@ class Engine:
         if match:
             try:
                 detail = await self.ekt.detail(int(match.group(1)))
-                if detail.get('id'):
+                if detail.get('id') == int(match.group(1)):
                     if detail.get('quantity') == 0 and detail.get('name') and detail['name'] != query:
-                        alternatives = await self.search(detail['name'], limit=limit)
+                        alternatives = await self.search(detail['name'], limit=max(limit, 18))
                         amps, poles = requested_electrical(detail['name'])
                         relevant = [p for p in alternatives if p['id'] != detail['id'] and (p.get('quantity') or 0) > 0
-                                    and requested_electrical(p.get('name', '')) == (amps, poles)]
+                                    and (amps or poles) and requested_electrical(p.get('name', '')) == (amps, poles)
+                                    and product_kind(p.get('name', '')) == product_kind(detail['name'])
+                                    and not conflict_warnings(p)]
+                        for p in relevant:
+                            p['_alternative_for'] = detail['id']
+                            p['_alternative_reason'] = f"Аналог отсутствующего товара {detail['id']}: совпадают " + ', '.join(x for x in [f'ток {amps} А' if amps else '', f'полюса {poles}' if poles else ''] if x) + '. Остальные параметры требуют проверки.'
                         return [detail] + relevant[:3]
                     return [detail]
             except Exception:
                 pass
         q = tokens(query)
+        exact = next((p for p in self.catalog if str(p.get('article', '')).casefold() == query.strip().casefold()), None)
+        if exact:
+            return await self.search(str(exact['id']), limit)
         words = [w for w in q.split() if len(w) > 1]
         requested_amps, requested_poles = requested_electrical(query)
         brand = requested_brand(query)
@@ -160,13 +177,16 @@ class Engine:
                 result.append(detail)
         return result
 
-    async def solution(self, query: str, mode: str = 'best') -> dict:
-        products = await self.search(query)
+    async def solution(self, query: str, mode: str = 'best', *, supplied_products=None) -> dict:
+        products = supplied_products if supplied_products is not None else await self.search(query)
         requested_amps, requested_poles = requested_electrical(query)
         brand = requested_brand(query)
         cable_size = requested_cable_size(query)
         for p in products:
             p['_match_warnings'] = []
+            kind = product_kind(query)
+            if kind and product_kind(p.get('name', '')) != kind:
+                p['_match_warnings'].append('Назначение товара отличается от запроса.')
             found_amps, found_poles = requested_electrical(p.get('name', ''))
             if requested_amps and found_amps and requested_amps != found_amps:
                 p['_match_warnings'].append(f'Ток отличается: требуется {requested_amps} А, товар {found_amps} А.')
@@ -205,7 +225,8 @@ class Engine:
                 'warnings': conflict_warnings(p) + p['_match_warnings'], 'stores': [s for s in p.get('stores', []) if s.get('quantity', 0) > 0],
                 'compatibility': 'uncertain' if conflict_warnings(p) else ('incompatible' if p['_match_warnings'] else 'uncertain'),
                 'missing_fields': missing_fields,
-                'reason': 'Совпадение по названию; полная совместимость не подтверждена.' if not p['_match_warnings'] else 'Есть расхождение с запросом; используйте как аналог только после проверки.',
+                'reason': p.get('_alternative_reason') or ('Совпадение по названию; полная совместимость не подтверждена.' if not p['_match_warnings'] else 'Есть расхождение с запросом; используйте как аналог только после проверки.'),
+                'alternative_for': p.get('_alternative_for'),
                 'certificate': certificate, 'certificate_status': certificate_status,
             })
         return {'query': query, 'mode': mode, 'products': cards, 'selected': cards[0] if cards else None, 'total': cards[0]['price'] if cards else None, 'route': 'DIRECT', 'events': ['Requirements extracted', 'Catalog searched', f'{len(cards)} live details verified', 'Solution generated'], 'warnings': ['Индивидуальный срок доставки API не предоставляет.']}

@@ -53,3 +53,4 @@ document.getElementById('file').onchange = async () => {
     bubble('Файл не обработан: ' + error.message);
   }
 };
+

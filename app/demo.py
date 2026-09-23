@@ -28,3 +28,4 @@ async def enable_demo(engine):
     await engine.ekt.close()
     engine.catalog = copy.deepcopy(PRODUCTS)
     engine.ekt = DemoClient()
+

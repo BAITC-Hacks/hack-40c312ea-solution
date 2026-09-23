@@ -23,6 +23,8 @@ class ModelRouter:
         return 'CHEAP'
 
     def config(self, level: str):
+        if os.getenv('DEMO_MODE') == '1':
+            return None
         model = os.getenv(f'{level}_MODEL', '')
         provider = os.getenv(f'{level}_PROVIDER', '')
         if not provider:

@@ -1,0 +1,21 @@
+(() => {
+  'use strict';
+  if (document.getElementById('ekt-assistant-widget')) return;
+  const script = document.currentScript;
+  const origin = new URL(script.src).origin;
+  const host = document.createElement('div');
+  host.id = 'ekt-assistant-widget';
+  const root = host.attachShadow({mode: 'open'});
+  const style = document.createElement('style');
+  style.textContent = ':host{position:fixed;right:20px;bottom:20px;z-index:2147483000;font:15px Arial,sans-serif}button{background:#d83230;color:white;border:0;border-radius:24px;padding:15px 20px;cursor:pointer;box-shadow:0 4px 20px #0003}iframe{display:none;width:420px;height:min(740px,85dvh);border:0;border-radius:16px;background:white;box-shadow:0 8px 40px #0004}.close{display:none;position:absolute;right:8px;top:8px;padding:7px 12px;border-radius:50%;z-index:1}.open iframe,.open .close{display:block}.open .launch{display:none}@media(max-width:600px){:host{right:12px;bottom:12px}.open{position:fixed;inset:0}.open iframe{width:100vw;height:100dvh;border-radius:0}.close{top:8px;right:8px}}';
+  const box = document.createElement('div');
+  const button = document.createElement('button');
+  button.className = 'launch'; button.textContent = '✦ EKT AI'; button.setAttribute('aria-label', 'Открыть помощника EKT / EKT көмекшісін ашу');
+  const close = document.createElement('button');
+  close.className = 'close'; close.textContent = '×'; close.setAttribute('aria-label', 'Закрыть / Жабу');
+  const frame = document.createElement('iframe');
+  frame.title = 'EKT AI assistant'; frame.referrerPolicy = 'no-referrer';
+  button.onclick = () => { if (!frame.src) frame.src = origin + '/?embed=1'; box.classList.add('open'); };
+  close.onclick = () => box.classList.remove('open');
+  box.append(button, frame, close); root.append(style, box); document.body.append(host);
+})();

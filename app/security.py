@@ -77,9 +77,17 @@ def install_security(app):
             response = JSONResponse({'detail': 'Не удалось обработать запрос. Попробуйте ещё раз или свяжитесь с менеджером.'}, status_code=500)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
-        response.headers['X-Frame-Options'] = 'DENY'
+        embedded = path == '/' and request.query_params.get('embed') == '1'
+        allowed = []
+        for entry in os.getenv('EMBED_ALLOWED_ORIGINS', 'https://ekt.kz,https://www.ekt.kz').split(','):
+            parsed = urlsplit(entry.strip())
+            if parsed.scheme == 'https' and parsed.netloc and not parsed.username and not parsed.password and not parsed.query and not parsed.fragment and parsed.path in {'', '/'}:
+                allowed.append(f'{parsed.scheme}://{parsed.netloc}')
+        ancestors = "'self' " + ' '.join(allowed) if embedded else "'none'"
+        if not embedded:
+            response.headers['X-Frame-Options'] = 'DENY'
         response.headers['Permissions-Policy'] = 'camera=(), microphone=(), geolocation=()'
-        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://ekt.kz https://*.ekt.kz blob: data:; connect-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+        response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' https://ekt.kz https://*.ekt.kz blob: data:; connect-src 'self'; object-src 'none'; frame-ancestors " + ancestors + "; base-uri 'self'; form-action 'self'"
         if path.startswith('/api/'):
             response.headers['Cache-Control'] = 'no-store'
         if request.url.scheme == 'https':

@@ -3,6 +3,8 @@ import re
 
 
 async def handle_query(text: str, mode: str, engine, router) -> dict:
+    if any(str(p.get('article', '')).casefold() == text.strip().casefold() for p in engine.catalog):
+        return await engine.solution(text, mode)
     level = router.level(text)
     if level != 'STRONG':
         phrase, route = await router.normalize(text)

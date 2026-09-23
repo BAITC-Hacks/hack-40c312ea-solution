@@ -70,3 +70,4 @@ async def parse_isolated(name, data):
     if result.get('error'):
         raise HTTPException(422, result['error'])
     return result
+

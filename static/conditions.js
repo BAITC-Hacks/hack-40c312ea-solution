@@ -15,3 +15,4 @@ document.getElementById('query-form').onsubmit = async event => {
   }
 };
 
+

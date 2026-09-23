@@ -200,3 +200,4 @@ def install_features(app, get_session, engine, sessions):
             sessions.pop(sid, None)
             sid, _ = get_session(None)
         return {'session_id': sid, 'cleared': True}
+

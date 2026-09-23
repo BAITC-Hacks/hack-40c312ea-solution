@@ -56,3 +56,4 @@ add = async function(product) {
     bubble('Не удалось добавить: ' + error.message);
   }
 };
+

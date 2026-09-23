@@ -1,83 +1,106 @@
-# EKT AI Engineer — HackAlem MVP
+# EKT AI Engineer · HackAlem MVP
 
-## Storefront feature update
+Консультант и помощник закупщика для **ekt.kz**: от запроса или спецификации до проверенной подборки и подтверждённой локальной корзины. Интерфейс работает на русском и казахском, на компьютере и телефоне.
 
-Новая витрина с чатом доступна на `/`, прежний интерфейс — на `/engine`.
-Семь функций, схема API, сценарий показа и ограничения описаны в [FEATURES.md](FEATURES.md).
-Для автономной демонстрации укажите `DEMO_MODE=1` в `.env`; товары будут явно помечены как вымышленные.
-Корзина остаётся локальной, обращения менеджеру — демозаявками без отправки в CRM.
+Репозиторий: [BAITC-Hacks/hack-40c312ea-solution](https://github.com/BAITC-Hacks/hack-40c312ea-solution), основная ветка **main**. Публичная развёрнутая версия пока не опубликована. После запуска: **http://127.0.0.1:8000** — ссылка работает на компьютере с запущенным сервером.
 
-AI Sales Engineer for ekt.kz: search real products, verify live details, compare alternatives, assemble a solution and add items to a prototype cart only after explicit confirmation.
+## Быстрый запуск для организаторов — без ключей
 
-## Run
+Требуется Python **3.11+**. Скачайте ZIP ветки `main` и распакуйте либо клонируйте репозиторий с доступом к BAITC-Hacks. Выполняйте команды в папке с `run.py` и `requirements.txt`.
 
-1. Install Python 3.11+ and `pip install -r requirements.txt`.
-2. Copy `.env.example` to `.env` and set `EKT_PASSWORD` for live EKT product lookups. This is a partner API credential, separate from OpenAI/NVIDIA keys. Text model routes are optional; image and scanned-PDF recognition require a configured `VISION_MODEL` and provider key. Keep `.env` private; it is ignored by Git.
-3. Run `uvicorn app.main:app --reload` and open `http://127.0.0.1:8000`.
+```bash
+python -m venv .venv
+```
 
-The catalog sync fetches up to `CATALOG_PAGES` pages (20 products each), stops when EKT repeats page one, and caches them locally. On 2026-09-23 a full scan found 14,835 unique products. Product ID lookup still uses live detail lookup. Price and stock displayed for shortlisted products come from the live detail endpoint. The EKT API exposes no individual delivery ETA or verified cart mutation endpoint in the supplied contract, so the cart is session-local and links to the official EKT basket for manual checkout. It does not claim to modify the remote basket. EKT's internal database is not accessible through the supplied credentials; integration into EKT can replace the isolated catalog and cart providers with internal services.
+Windows PowerShell:
 
-## Architecture
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe run.py --demo
+```
 
-`Browser → FastAPI → intent/model router → catalog cache/search → live EKT details → solution/compatibility → confirmation gate → local cart`
+macOS / Linux:
 
-Model routing uses no model for exact lookups and product facts. Short requests route to `CHEAP`, comparisons to `MEDIUM`, complex solution requests to `STRONG`, and images to `VISION`. Set each `*_MODEL` and optional `*_PROVIDER` (`openai` or `nvidia`) in `.env`. Requests fall back to deterministic lookup when keys/models are unavailable. The chosen route appears in the UI. The OpenAI cheap, medium, strong and vision routes have been live-tested. NVIDIA requires a separate key and has not been tested. A local usage ledger and configurable call/spend caps limit model usage; its dollar value is an estimate, not provider billing.
+```bash
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python run.py --demo
+```
 
-CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG and scanned PDFs use a configured vision model; for scanned PDFs the first page is rendered for the vision route. File content is treated as untrusted data. The parser processes up to 12 specification rows per upload. Complex solution requests produce several component roles and explicitly mark compatibility uncertain when critical ratings are absent. Modes include Cheapest, Available, Best fit and Preferred brand; follow-up requests recheck the catalog rather than reusing stale prices and stock.
+Откройте **http://127.0.0.1:8000**. `--demo` использует явно подписанные вымышленные товары `DEMO`, не вызывает EKT и платные модели. Доступны каталог, поиск, русский/казахский чат, текстовые файлы, подтверждение количества и локальная корзина. Фото требуют vision-модели в live-режиме. `python run.py` тоже включает демо, если пароль EKT отсутствует или равен `replace_me`.
 
-Official purchase conditions are shown from [EKT's information page](https://ekt.kz/about/information/); product-specific ETA and minimum order remain unknown.
+## Реальный каталог EKT
 
-## Data and session state
+1. Скопируйте `.env.example` в `.env`.
+2. Укажите выданные партнёром `EKT_USER`, `EKT_PASSWORD` и `DEMO_MODE=0`.
+3. Запустите `python run.py` из созданного окружения.
+4. При первом запуске дождитесь синхронизации. Поиск по ID доступен сразу; последующие запуски используют локальный индекс. Цены и остатки выбранных товаров читаются из API заново.
 
-- EKT's catalog list is cached in `catalog_cache.json`; shortlisted product details are requested from the EKT API. Searches and follow-up requests fetch current product details; price and stock are checked again when a local cart action is confirmed.
-- Chat sessions and prototype carts live in server memory. The new storefront keeps its session identifier in sessionStorage; the legacy /engine interface uses localStorage. Server sessions expire after 30 minutes of inactivity, and restarting the server loses the in-memory cart. The prototype does not authenticate EKT customers or update their official basket.
-- When a model route is configured, customer text may be sent to the selected OpenAI/NVIDIA provider; photos and scans require separate explicit consent before transmission. Use synthetic or approved data in demos. `model_usage.json` records local estimated usage, not a provider invoice.
+Ключи и пароли не включены в репозиторий. Для проверки со смартфона в доверенной общей сети можно запустить `python run.py --host 0.0.0.0` и открыть адрес компьютера. Для публикации нужен HTTPS-хостинг.
 
-## Demo
+## Реализованные возможности
 
-- Search for product ID `515291`.
-- Ask for `автомат Schneider 3P 32A`.
-- Upload a `.csv` or `.xlsx` specification.
-- Compare Cheapest / Available / Best fit.
-- Add the proposed set to the local cart with a separate confirmation.
-- Say `добавь всё в корзину`, then `да, добавь` in the next message. The first message only prepares a local cart action; stock is rechecked before the second one applies it.
-- Ask for `Нужно собрать защиту двигателя 11 кВт, 380 В, желательно Schneider`; the result should request the motor's nameplate current before claiming compatibility.
+- Каталог с изображениями, ID/артикулом, поиском, категориями и страницами; живые цена/остаток; карточки с характеристиками, складами и сертификатом, если API предоставляет ссылку.
+- Русский и казахский интерфейс и ответы, контекст текущего товара, условия оплаты/доставки, уточнение параметров. Исходные названия и характеристики сохраняются как в каталоге.
+- Аналоги отсутствующих товаров по известному назначению, току и полюсам с объяснением; при нехватке данных — уточнение и менеджер.
+- Предварительный комплект для сложной задачи; режимы «Дешевле», «В наличии», «Лучшее совпадение», предпочтительный бренд через диалог. Совместимость без достаточных данных не гарантируется.
+- CSV, XLS/XLSX, DOCX, текстовый PDF, JPG/JPEG/PNG, первая страница сканированного PDF. Предпросмотр и исправление распознанных строк/количеств перед подбором. Отдельное согласие на передачу изображения ИИ.
+- Локальная корзина: добавление, изменение и удаление только после отдельного подтверждения. Повторно проверяются цена, остаток, выбранный склад и кратность. Токен привязан к сессии и действует 120 секунд; повторное использование не добавляет товар снова.
+- Прямая ссылка **`/cart`** открывает текущее содержимое локальной корзины в той же вкладке/сессии. Заказ не отправляется и товар не резервируется.
+- Реальные `tel:`, WhatsApp и email менеджера EKT с официального сайта. Пользователь сам звонит/отправляет сообщение; история автоматически не передаётся. Старый API демозаявки сохранён, CRM не подключена.
+- Полноэкранный мобильный чат, адаптивные карточки и окна подтверждения, история текущей анонимной сессии, очистка данных и отказ от дополнительных рекомендаций.
+- Встраиваемый виджет, проверка источника запросов, изоляция сессий и обработка документов в ограниченном дочернем процессе.
 
-The source API fields verified on 2026-09-23: list `page`, `per_page`, `count`, `items`; item `id`, `name`, `article`, `price`, `image`, `url`, `offers`; detail adds `description`, `quantity`, `stores`, `properties`. Some source fields conflict: product 515291 says 160 A in its name/description while `NOMINALNYY_TOK` says 250 A. The agent must surface this uncertainty.
+## Пример проверки
 
-## Validation
+В деморежиме откройте товар **900005**, укажите **2** единицы и нажмите добавление. До отдельного подтверждения корзина пуста; после него `/cart` содержит 2 единицы. Превышение остатка отклоняется.
 
-Run `python tests/test_agent_behavior.py` after installing `requirements.txt`. The script calls the real FastAPI routes with a deterministic synthetic EKT fixture. It does not contact EKT, model providers or GitHub, and it prints JSON results. Set the optional `TEST_TARGET_SHA` environment variable to label a run with its Git commit.
+В чате: `900005` → `добавь 2 в корзину` → отдельное `да, добавь`. На казахском: `Маған 900005 керек` → `себетке 2 қос` → `иә, қос`. Загрузите `examples/demo_spec.csv`, проверьте количества и подтвердите подбор: загрузка сама не меняет корзину. Кнопка «Менеджер» показывает действительные контакты, для теста звонить не нужно. `/embed-demo` демонстрирует виджет.
 
-The [first-pass report](qa/baseline-report-ca57662b.md) and [machine-readable results](qa/baseline-results-ca57662b.json) cover commit `ca57662b`: 22 scenarios, 16 passed, 5 failed and 1 blocked. The failures document gaps in the tested version; a pass against synthetic data does not prove live EKT integration. The blocked image test had no configured vision model. Live catalog access, remote cart state, browser/mobile behavior and network latency need separate checks. Keep this baseline unchanged and add a new report for each later commit so results remain comparable.
+В live-режиме: **33723** — пример Schneider; **515291** — пример противоречия 160/250 A в исходных данных, которое вызывает предупреждение. Запросы: `автомат Schneider 3P 32A`, `сделай дешевле`, `Нужно собрать защиту двигателя 11 кВт, 380 В`. Цены и остатки меняются; числа из скриншотов не являются тестовой фикстурой.
 
-## Limits
+## Технологии и архитектура
 
-### Cart confirmation patch
+Python, FastAPI/Pydantic, HTTPX, RapidFuzz; обычные HTML/CSS/JavaScript без сборщика frontend. Для файлов: openpyxl, xlrd, python-docx, PyMuPDF, Pillow. Сессии в памяти и локальный JSON-индекс.
 
-Single-item and batch cart actions share an expiring server-side confirmation gate.
-The preview contains the exact items, quantities, prices, total and stock scope.
-Confirmations expire after 120 seconds and are scoped to the current session and
-action type. Price or purchase-condition changes require a fresh confirmation.
-Repeated confirmations are rejected with HTTP 400 without applying the action again.
-All cart mutations for one session are serialized, including mixed single/batch
-requests. `POST /api/cart/cancel` revokes a pending token. The existing endpoint
-names and response fields remain available.
-Chat commands such as `добавь 2 в корзину` preserve the requested quantity.
+```mermaid
+flowchart TD
+    A[Витрина / чат RU и KK / мобильный виджет] --> B[FastAPI и сессия]
+    B --> C[Требования / разбор файла]
+    C --> D[Маршрутизатор моделей]
+    D --> E[Индекс каталога и поиск]
+    E --> F[Живые карточки EKT]
+    F --> G[Подборка / аналоги / ограничения]
+    G --> H[Отдельное подтверждение]
+    H --> I[Повторная проверка цены и остатка]
+    I --> J[CartProvider: локальная корзина /cart]
+    B --> K[Контакты менеджера EKT]
+```
 
-An optional integer `store_id` is accepted for each cart line. When omitted,
-stock is checked across warehouses and the preview explicitly says no warehouse
-was chosen. The gate also checks `KRATNOST_MIN` when supplied by EKT. Stock checks
-do not reserve goods: this is still a local prototype, with no official EKT cart
-mutation. The session-ID header remains a bearer credential; sessions expire after 30 minutes of inactivity. Full customer authentication and
-deployment across multiple workers require separate work.
+Папки: `app/` — API, агент, провайдеры, парсеры и безопасность; `static/` — витрина/чат/виджет; `tests/` — автономные проверки; `examples/` — спецификация; `docs/` — интеграция; `qa/` — отчёты команды. `run.py` — единая точка запуска. Маршруты: `/`, `/cart`, `/engine` (исходный интерфейс), `/embed-demo`, `/openapi.json` (описание API), `/api/integration`.
 
-Run the offline regression checks with `python -m unittest discover -s tests -v`.
-They substitute EKT responses and do not call a paid model or place real orders.
+## Данные, модели и внешние сервисы
 
-### Existing prototype limits
+EKT: `https://ekt.kz/api/products?page=N`, `https://ekt.kz/api/products/detail?id=ID`; BasicAuth только на сервере. Схема: `id`, `article`, `name`, `price`, `image`, `url`; detail добавляет `quantity`, `stores`, `properties`, `description`. Каталог читается до повторения первой страницы или заданного лимита. [Условия покупки](https://ekt.kz/about/information/) и [контакты](https://ekt.kz/about/contacts/) проверены 23.09.2026. Индивидуальный ETA и общая минимальная сумма заказа не выдумываются.
 
-- The browser's cart is a local session prototype. The official EKT checkout link opens the real site but does not transfer local items.
-- The supplied EKT API provides catalog and detail endpoints, not its entire internal database or an order-writing contract.
-- Compatibility checks cover identifiable ratings in product names and exposed properties; they cannot certify electrical design.
-- If EKT omits a certificate link, minimum order or item-specific ETA, the UI reports that information as unavailable.
+OpenAI/NVIDIA опциональны: `OPENAI_API_KEY`, `NVIDIA_API_KEY`; `CHEAP_MODEL`, `MEDIUM_MODEL`, `STRONG_MODEL`, `VISION_MODEL` и `*_PROVIDER` задаются в `.env`. В текущем окружении проверены `gpt-6-luna`, `gpt-5.4-mini`, `gpt-6-sol`; доступность зависит от аккаунта. NVIDIA без ключа не тестировалась.
+
+`DIRECT` — точный ID/артикул, условия, корзина без модели. `CHEAP` — короткий запрос; `MEDIUM` — сравнительный; `STRONG` — сложный комплект; `VISION` — изображение. Весь каталог в модель не передаётся. Если провайдер недоступен, текстовый поиск продолжает работать с явным fallback. `MAX_MODEL_CALLS` и `MODEL_SPEND_LIMIT_USD` ограничивают использование; `model_usage.json` содержит оценку, а не выписку биллинга. Для неизвестных моделей стоимость может быть не определена.
+
+## Проверки
+
+```bash
+python -m unittest discover -s tests -v
+python tests/test_agent_behavior.py
+```
+
+Первый набор проверяет актуальное поведение. Второй сохраняет исходные ожидания QA: интеграция с удалённой корзиной EKT остаётся незакрытой, а его JPEG-фикстура содержит некорректные байты и отклоняется новой проверкой файла. Подробности — `qa/acceptance-report.md`; исходные отчёты команды сохранены.
+
+## Совместимость и известные ограничения
+
+См. [docs/INTEGRATION.md](docs/INTEGRATION.md). На сайте наблюдаются ресурсы `/bitrix/`. Виджет подключается одним script; backend можно разместить отдельно или за reverse proxy. Проверка в шаблоне и cookie-сессии EKT требует доступа партнёра.
+
+**Штатная корзина и внутренняя БД EKT не подключены.** Выданный API даёт чтение каталога. `CartProvider` изолирует локальную реализацию; EKT должен предоставить разрешённый контракт корзины, связь с посетителем и тестовый контур. Официальная ссылка не переносит локальные позиции. Требование полноценного оформления на ekt.kz пока реализовано только на уровне локального прототипа.
+
+Сессии живут в памяти до 30 минут бездействия и теряются при перезапуске; запускайте MVP одним процессом. История авторизованных пользователей и CRM не подключены. Файл — до 10 МБ/12 строк; скан PDF — первая страница. Электрическая совместимость предварительная. Если подходящего аналога с подтверждёнными свойствами нет, замена не гарантируется. Задержка зависит от EKT и ИИ, сложный комплект может занимать больше нескольких секунд.
+
+История сохраняет коммит **DamiMura / Damitov Murat** `c6dd771` и QA-коммиты **ent1tyyyy**. Репозиторий приватный внутри BAITC-Hacks: организаторам нужны права на него; для автономного демо секреты не требуются.

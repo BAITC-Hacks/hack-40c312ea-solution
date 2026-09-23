@@ -16,7 +16,7 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, ConfigDict, Field, StrictInt
 
 load_dotenv()
-from .engine import Engine, requested_brand  # noqa: E402
+from .engine import Engine, requested_brand, product_kind, CACHE  # noqa: E402
 from .files import parse_file
 from .model_router import ModelRouter
 from .agent import handle_query
@@ -25,6 +25,7 @@ from .security import get_session, install_security, audit, redact
 from .features import install_features, conversation_intent
 from .i18n import language, search_phrase, localize_result, tr
 from .upload_guard import validate_file, parse_isolated
+from .integration import install_integration
 
 app = FastAPI(title='EKT AI Engineer')
 engine = Engine()
@@ -33,6 +34,7 @@ sessions: dict[str, dict] = {}
 STATIC = Path(__file__).parent.parent / 'static'
 UPLOAD_SLOTS = asyncio.Semaphore(2)
 install_security(app)
+install_integration(app)
 
 
 @app.exception_handler(RequestValidationError)
@@ -80,8 +82,19 @@ install_features(app, session, engine, sessions)
 
 
 @app.get('/')
+@app.get('/cart')
 async def index():
     return FileResponse(STATIC / 'store.html')
+
+
+@app.get('/widget.js')
+async def widget_script():
+    return FileResponse(STATIC / 'widget.js', media_type='application/javascript')
+
+
+@app.get('/embed-demo')
+async def embed_demo():
+    return FileResponse(STATIC / 'embed-demo.html')
 
 
 @app.get('/engine')
@@ -97,6 +110,16 @@ async def store_script():
 @app.get('/store.css')
 async def store_style():
     return FileResponse(STATIC / 'store.css')
+
+
+@app.get('/enhancements.js')
+async def enhancements_script():
+    return FileResponse(STATIC / 'enhancements.js', media_type='application/javascript')
+
+
+@app.get('/responsive.css')
+async def responsive_style():
+    return FileResponse(STATIC / 'responsive.css', media_type='text/css')
 
 
 @app.get('/style.css')
@@ -166,7 +189,9 @@ async def startup():
         async def refresh_loop():
             while True:
                 try:
-                    await engine.sync()
+                    age = time.time() - CACHE.stat().st_mtime if CACHE.exists() else float('inf')
+                    if not engine.catalog or age > max(1, int(os.getenv('CATALOG_REFRESH_HOURS', '12'))) * 3600:
+                        await engine.sync()
                 except Exception:
                     engine.syncing = False
                 await asyncio.sleep(max(1, int(os.getenv('CATALOG_REFRESH_HOURS', '12'))) * 3600)
@@ -183,13 +208,25 @@ async def shutdown():
 
 
 @app.get('/api/catalog')
-async def catalog(q: str = '', limit: int = 12):
+async def catalog(q: str = '', limit: int = 12, page: int = 1, category: str = ''):
     if len(q) > 200:
         raise HTTPException(422, 'Слишком длинный запрос.')
     if q:
-        result = await engine.solution(q)
+        result = await engine.solution(search_phrase(q))
         return {'products': result['products'][:max(1, min(limit, 24))], 'verified': True}
-    return {'products': engine.catalog[:max(1, min(limit, 24))], 'verified': False}
+    limit, page = max(1, min(limit, 24)), max(1, min(page, 1000))
+    source = [p for p in engine.catalog if not category or product_kind(p.get('name', '')) == category]
+    # A useful first screen, with the rest of the real catalog available through pagination/search.
+    if not category:
+        preferred = [33723, 33705, 33714]
+        source = sorted(source, key=lambda p: (p['id'] not in preferred, preferred.index(p['id']) if p['id'] in preferred else 0))
+    selected = source[(page - 1) * limit:page * limit]
+    records = await asyncio.gather(*(engine.ekt.detail(p['id']) for p in selected), return_exceptions=True)
+    verified = [r for p, r in zip(selected, records) if isinstance(r, dict) and r.get('id') == p['id']]
+    result = await engine.solution('', supplied_products=verified)
+    return {'products': result['products'], 'verified': True, 'total': len(source), 'page': page,
+            'has_more': page * limit < len(source), 'unavailable_count': len(selected) - len(verified),
+            'syncing': engine.syncing, 'verified_at': time.time()}
 
 
 @app.get('/api/products/{product_id}')
@@ -228,6 +265,11 @@ async def query(body: Query, x_session_id: str | None = Header(default=None)):
     history.append({'role': 'user', 'text': redact(body.text)[:1000]})
     intent = conversation_intent(body.text, state, lang)
     if intent:
+        pending = state.pop('pending_chat_cart', None)
+        if pending:
+            action = state.get('cart_actions', {}).get(pending['token'])
+            if action and action.get('status') == 'pending':
+                action['status'] = 'cancelled'
         result = {'session_id': sid, 'products': [], 'events': [], 'warnings': [], 'route': 'DIRECT', **intent}
     else:
         phrase = search_phrase(body.text) if lang == 'kk' else body.text
@@ -282,7 +324,7 @@ async def query_core(body: Query, x_session_id: str | None = None):
                 confirmed = await confirm_batch(BatchConfirm(confirmation_token=pending['token']), sid)
             except HTTPException as exc:
                 return {'session_id': sid, 'action': 'cart_error', 'message': str(exc.detail), 'products': [], 'events': ['Stock recheck failed'], 'warnings': [], 'route': 'DIRECT'}
-            return {'session_id': sid, 'action': 'cart_added', 'message': 'Позиции добавлены в локальную корзину. Официальную корзину EKT потребуется заполнить на сайте.', 'cart': confirmed['cart'], 'official_cart_url': confirmed['official_cart_url'], 'products': [], 'events': ['Live stock rechecked', 'Local cart updated'], 'warnings': [], 'route': 'DIRECT'}
+            return {'session_id': sid, 'action': 'cart_added', 'message': 'Позиции добавлены в локальную корзину. Откройте её по ссылке ниже. Заказ в EKT не отправлен.', 'cart': confirmed['cart'], 'cart_url': '/cart', 'official_cart_url': confirmed['official_cart_url'], 'products': [], 'events': ['Live stock rechecked', 'Local cart updated'], 'warnings': [], 'route': 'DIRECT'}
     if re.search(r'\b(?:добавь|добавить|положи)\b.*\bкорзин', lower):
         state.pop('pending_chat_cart', None)
         requested_quantity = None
@@ -451,7 +493,7 @@ async def cancel(body: BatchConfirm, x_session_id: str | None = Header(default=N
 @app.get('/api/cart')
 async def cart(x_session_id: str | None = Header(default=None)):
     sid, state = session(x_session_id)
-    return {'session_id': sid, 'cart': state['cart'], 'cart_type': 'local_prototype'}
+    return {'session_id': sid, 'cart': state['cart'], 'cart_type': 'local_prototype', 'cart_url': '/cart'}
 
 
 class CartEdit(BaseModel):

@@ -7,6 +7,7 @@ from decimal import Decimal, InvalidOperation
 from time import monotonic
 
 from fastapi import HTTPException
+from .cart_provider import cart_provider
 
 TTL_SECONDS = 120
 MAX_ACTIONS = 32
@@ -101,8 +102,7 @@ async def _snapshot(lines: list[dict], state: dict, detail) -> list[dict]:
 
 
 def _receipt(state: dict) -> dict:
-    return {'cart': copy.deepcopy(state['cart']), 'cart_type': 'local_prototype',
-            'official_cart_url': 'https://ekt.kz/personal/cart/'}
+    return cart_provider.receipt(state)
 
 
 async def prepare_action(state: dict, lines: list[dict], detail, *, kind: str) -> dict:
@@ -143,7 +143,7 @@ async def confirm_action(state: dict, token: str | None, detail, *, kind: str,
         if snapshot != action['snapshot']:
             action['status'] = 'invalidated'
             raise HTTPException(409, 'Цена или условия товара изменились. Проверьте новые данные и подтвердите заново.')
-        state['cart'].extend(copy.deepcopy(snapshot))
+        cart_provider.add(state, snapshot)
         action['status'] = 'completed'
         return _receipt(state)
 
@@ -190,6 +190,6 @@ async def confirm_edit(state, token, detail):
         snapshot = await _snapshot(action['lines'], other, detail) if action['lines'] else []
         if snapshot != action['snapshot'] or monotonic() >= action['expires_at']:
             raise HTTPException(409, 'Условия изменились или подтверждение истекло.')
-        state['cart'][i:i + 1] = snapshot
+        cart_provider.replace(state, i, snapshot)
         action['status'] = 'completed'
         return _receipt(state)

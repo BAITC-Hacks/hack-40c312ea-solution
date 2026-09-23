@@ -11,9 +11,9 @@ def _table_requirements(rows):
     if not rows:
         return []
     header = [cell.casefold() for cell in rows[0]]
-    quantity_keys = ('количество', 'кол-во', 'кол во', 'qty', 'quantity', 'шт')
+    quantity_keys = ('количество', 'кол-во', 'кол во', 'qty', 'quantity', 'шт', 'саны', 'мөлшері')
     quantity_index = next((i for i, cell in enumerate(header) if any(key in cell for key in quantity_keys)), None)
-    name_keys = ('наименование', 'товар', 'название', 'description', 'позиция', 'артикул')
+    name_keys = ('наименование', 'товар', 'название', 'description', 'позиция', 'артикул', 'атауы', 'тауар')
     has_header = quantity_index is not None or any(any(key in cell for key in name_keys) for cell in header)
     output = []
     for row in rows[1:] if has_header else rows:
@@ -21,8 +21,12 @@ def _table_requirements(rows):
         index = quantity_index
         if index is None and len(row) > 1 and re.fullmatch(r'\d+(?:\.0)?', row[-1]):
             index = len(row) - 1
-        if index is not None and index < len(row) and re.fullmatch(r'\d+(?:\.0)?', row[index]):
-            qty = max(1, int(float(row[index])))
+        if index is not None and index < len(row) and row[index]:
+            if not re.fullmatch(r'\d+(?:\.0)?', row[index]):
+                raise ValueError('Quantity must be a positive integer')
+            qty = int(float(row[index]))
+            if not 1 <= qty <= 10000:
+                raise ValueError('Quantity must be between 1 and 10000')
         description = ' '.join(cell for i, cell in enumerate(row) if cell and i != index)[:400]
         if len(description) >= 3:
             output.append({'description': description, 'quantity': qty})
@@ -35,8 +39,11 @@ def _text_requirements(lines):
         line = line.strip()
         if len(line) < 3:
             continue
-        match = re.search(r'(?:кол[-. ]?во|qty|quantity|шт)\s*[:=]?\s*(\d+)', line, re.I)
-        quantity = max(1, int(match.group(1))) if match else 1
+        match = re.search(r'(?:кол[-. ]?во|qty|quantity|саны|шт)\s*[:=]?\s*(\d+)', line, re.I)
+        suffix = re.search(r'\b(\d+)\s*(?:шт\.?|дана)\b', line, re.I)
+        quantity = int((match or suffix).group(1)) if match or suffix else 1
+        if not 1 <= quantity <= 10000:
+            raise ValueError('Quantity must be between 1 and 10000')
         output.append({'description': line[:400], 'quantity': quantity})
     return output
 
