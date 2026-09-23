@@ -456,6 +456,13 @@ async def query_core(body: Query, x_session_id: str | None = None):
             if replacement:
                 text = re.sub(re.escape(replacement.group(1)), replacement.group(2), state['last_query'], flags=re.I)
                 mode = 'brand'
+    if re.search(r'аналог|артикул|замен', original_text, re.I):
+        for item in engine.catalog:
+            article = str(item.get('article') or '')
+            if len(article) >= 5 and re.search(r'(?<!\w)' + re.escape(article) + r'(?!\w)', original_text, re.I):
+                text = str(item['id'])
+                mode = 'best'
+                break
     if not engine.catalog and hasattr(app.state, 'sync_task') and not re.fullmatch(r'\s*(?:id\s*[=:]?\s*)?\d{5,7}\s*', text, re.I):
         import asyncio
         for _ in range(100):

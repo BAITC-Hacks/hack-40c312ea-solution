@@ -186,23 +186,68 @@ class Engine:
         finally:
             self.syncing = False
 
+    async def find_alternatives(self, original: dict) -> list[dict]:
+        """Shortlist by verified technical fields, then recheck live stock."""
+        kind = catalog_kind(original)
+        attrs = attributes(original)
+        if kind == 'lamp':
+            required = ('base', 'power')
+            optional = ('color_temperature', 'voltage')
+        elif kind in {'breaker', 'rcd', 'contactor'}:
+            required = ('current', 'poles')
+            optional = ('voltage', 'breaking_capacity')
+        else:
+            return []
+        if any(not attrs.get(key) for key in required):
+            return []
+        def canonical(value):
+            return re.sub(r'[^a-z0-9]+', '', str(value).casefold().replace('е', 'e'))
+        def same(a, b):
+            x, y = re.search(r'\d+(?:[.,]\d+)?', str(a)), re.search(r'\d+(?:[.,]\d+)?', str(b))
+            return float(x.group().replace(',', '.')) == float(y.group().replace(',', '.')) if x and y else canonical(a) == canonical(b)
+        possible = []
+        for item in self.catalog:
+            if item['id'] == original['id'] or catalog_kind(item) != kind:
+                continue
+            fields = attributes(item)
+            if any(not fields.get(key) or not same(attrs[key], fields[key]) for key in required):
+                continue
+            if any(attrs.get(key) and fields.get(key) and not same(attrs[key], fields[key]) for key in optional):
+                continue
+            score = sum(bool(attrs.get(key) and fields.get(key) and same(attrs[key], fields[key])) for key in optional) * 30
+            score += fuzz.WRatio(original.get('name', ''), item.get('name', ''))
+            possible.append((score, item))
+        possible.sort(key=lambda row: row[0], reverse=True)
+        shortlist = possible[:24]
+        checked = await asyncio.gather(*(self.ekt.detail(item['id']) for _, item in shortlist), return_exceptions=True)
+        output = []
+        for (_, item), current in zip(shortlist, checked):
+            if not isinstance(current, dict) or current.get('id') != item['id'] or not (current.get('quantity') or 0) > 0:
+                continue
+            fields = attributes(current)
+            if catalog_kind(current) != kind or any(not fields.get(key) or not same(attrs[key], fields[key]) for key in required):
+                continue
+            if any(attrs.get(key) and fields.get(key) and not same(attrs[key], fields[key]) for key in optional):
+                continue
+            if conflict_warnings(current):
+                continue
+            current['_alternative_for'] = original['id']
+            matches = ', '.join(f'{key}: {attrs[key]}' for key in (*required, *optional) if attrs.get(key) and fields.get(key) and same(attrs[key], fields[key]))
+            missing = [key for key in (*required, *optional) if not attrs.get(key) or not fields.get(key)]
+            current['_alternative_reason'] = f'Аналог отсутствующего товара {original["id"]}: совпадают {matches}. ' + ('Не подтверждены: ' + ', '.join(missing) + '. ' if missing else '') + 'Проверьте посадочные размеры и другие требования.'
+            output.append(current)
+            if len(output) == 3:
+                break
+        return output
+
     async def search(self, query: str, limit: int = 6) -> list[dict]:
         match = re.fullmatch(r'\s*(?:id[=:\s]*)?(\d{5,7})\s*', query, re.I)
         if match:
             try:
                 detail = await self.ekt.detail(int(match.group(1)))
                 if detail.get('id') == int(match.group(1)):
-                    if detail.get('quantity') == 0 and detail.get('name') and detail['name'] != query:
-                        alternatives = await self.search(detail['name'], limit=max(limit, 18))
-                        amps, poles = requested_electrical(detail['name'])
-                        relevant = [p for p in alternatives if p['id'] != detail['id'] and (p.get('quantity') or 0) > 0
-                                    and (amps or poles) and requested_electrical(p.get('name', '')) == (amps, poles)
-                                    and catalog_kind(p) == catalog_kind(detail)
-                                    and not conflict_warnings(p)]
-                        for p in relevant:
-                            p['_alternative_for'] = detail['id']
-                            p['_alternative_reason'] = f"Аналог отсутствующего товара {detail['id']}: совпадают " + ', '.join(x for x in [f'ток {amps} А' if amps else '', f'полюса {poles}' if poles else ''] if x) + '. Остальные параметры требуют проверки.'
-                        return [detail] + relevant[:3]
+                    if detail.get('quantity') == 0 and detail.get('name'):
+                        return [detail] + await self.find_alternatives(detail)
                     return [detail]
                 return []
             except CatalogUnavailable:

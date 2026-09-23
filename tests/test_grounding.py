@@ -441,3 +441,27 @@ class GroundingTests(unittest.IsolatedAsyncioTestCase):
         d = await self.ask('добавь первую розетку в корзину')
         self.assertEqual(d['action'], 'cart_unavailable')
         self.assertEqual(main.sessions[self.sid]['cart'], [])
+
+
+    async def test_out_of_stock_lamp_article_shows_only_in_stock_same_specs(self):
+        self.products[6]['quantity'] = 0
+        d = await self.ask('Есть аналог артикула 910001_?')
+        ids = [p['id'] for p in d['products']]
+        self.assertIn(910001, ids)
+        self.assertTrue(any(pid in ids for pid in [910002, 910003]))
+        self.assertNotIn(910005, ids)
+        self.assertNotIn(910006, ids)
+        for p in d['products']:
+            if p['id'] != 910001:
+                self.assertGreater(p['quantity'], 0)
+                self.assertEqual(p['alternative_for'], 910001)
+                self.assertIn('base: E27', p['reason'])
+                self.assertIn('power: 10W', p['reason'])
+
+    async def test_no_verified_analogue_does_not_invent_substitute(self):
+        self.products[6]['quantity'] = 0
+        for p in self.products[7:9]:
+            p['quantity'] = 0
+        d = await self.ask('Есть аналог артикула 910001_?')
+        self.assertEqual([p['id'] for p in d['products']], [910001])
+        self.assertFalse(any(p['alternative_for'] for p in d['products']))
