@@ -12,17 +12,25 @@ class EKTClient:
     def __init__(self):
         self.user = os.getenv('EKT_USER', 'apiuser')
         self.password = os.getenv('EKT_PASSWORD', '')
-        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=12, follow_redirects=True)
+        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=20, follow_redirects=True)
+
+    async def _get(self, url: str, params: dict) -> dict[str, Any]:
+        for attempt in range(3):
+            try:
+                response = await self.client.get(url, params=params)
+                response.raise_for_status()
+                return response.json()
+            except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError):
+                if attempt == 2:
+                    raise
+                await asyncio.sleep(0.4 * (2 ** attempt))
+        raise RuntimeError('EKT request failed')
 
     async def page(self, number: int) -> dict[str, Any]:
-        response = await self.client.get(BASE, params={'page': number})
-        response.raise_for_status()
-        return response.json()
+        return await self._get(BASE, {'page': number})
 
     async def detail(self, product_id: int) -> dict[str, Any]:
-        response = await self.client.get(BASE + '/detail', params={'id': product_id})
-        response.raise_for_status()
-        return response.json()
+        return await self._get(BASE + '/detail', {'id': product_id})
 
     async def pages(self, count: int) -> list[dict[str, Any]]:
         result = []
