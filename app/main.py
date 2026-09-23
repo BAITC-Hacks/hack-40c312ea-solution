@@ -117,7 +117,8 @@ async def confirm(body: CartRequest, x_session_id: str | None = Header(default=N
     if not pending or pending['id'] != body.product_id or pending['quantity'] != body.quantity:
         raise HTTPException(400, 'Confirmation missing or expired')
     product = await engine.ekt.detail(body.product_id)
-    if (product.get('quantity') or 0) < body.quantity:
+    already = sum(item['quantity'] for item in state['cart'] if item['id'] == body.product_id)
+    if (product.get('quantity') or 0) < body.quantity + already:
         raise HTTPException(409, 'Stock changed')
     state['cart'].append({'id': body.product_id, 'name': product.get('name'), 'quantity': body.quantity, 'price': product.get('price')})
     return {'session_id': sid, 'cart': state['cart'], 'cart_type': 'local_prototype', 'official_cart_url': 'https://ekt.kz/personal/cart/'}
