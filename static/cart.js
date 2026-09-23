@@ -7,6 +7,7 @@ function askCartConfirmation(message) {
     const heading = document.createElement('h3');
     heading.textContent = 'Подтвердите добавление';
     const body = document.createElement('p');
+    body.style.whiteSpace = 'pre-line';
     body.textContent = message + ' Официальная корзина EKT при этом не изменится.';
     const actions = document.createElement('div');
     actions.className = 'confirm-actions';
@@ -27,7 +28,11 @@ function askCartConfirmation(message) {
 add = async function(product) {
   try {
     const prepared = await api('/api/cart/prepare', {product_id: product.id, quantity: 1});
-    if (!await askCartConfirmation(prepared.message)) return;
+    if (!await askCartConfirmation(prepared.message)) {
+      await api('/api/cart/cancel', {confirmation_token: prepared.confirmation_token});
+      bubble('Добавление отменено.');
+      return;
+    }
     const confirmed = await api('/api/cart/confirm', {
       product_id: product.id,
       quantity: 1,
@@ -51,4 +56,3 @@ add = async function(product) {
     bubble('Не удалось добавить: ' + error.message);
   }
 };
-

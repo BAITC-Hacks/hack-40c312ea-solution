@@ -1,5 +1,12 @@
 # EKT AI Engineer — HackAlem MVP
 
+## Storefront feature update
+
+Новая витрина с чатом доступна на `/`, прежний интерфейс — на `/engine`.
+Семь функций, схема API, сценарий показа и ограничения описаны в [FEATURES.md](FEATURES.md).
+Для автономной демонстрации укажите `DEMO_MODE=1` в `.env`; товары будут явно помечены как вымышленные.
+Корзина остаётся локальной, обращения менеджеру — демозаявками без отправки в CRM.
+
 AI Sales Engineer for ekt.kz: search real products, verify live details, compare alternatives, assemble a solution and add items to a prototype cart only after explicit confirmation.
 
 ## Run
@@ -16,15 +23,15 @@ The catalog sync fetches up to `CATALOG_PAGES` pages (20 products each), stops w
 
 Model routing uses no model for exact lookups and product facts. Short requests route to `CHEAP`, comparisons to `MEDIUM`, complex solution requests to `STRONG`, and images to `VISION`. Set each `*_MODEL` and optional `*_PROVIDER` (`openai` or `nvidia`) in `.env`. Requests fall back to deterministic lookup when keys/models are unavailable. The chosen route appears in the UI. The OpenAI cheap, medium, strong and vision routes have been live-tested. NVIDIA requires a separate key and has not been tested. A local usage ledger and configurable call/spend caps limit model usage; its dollar value is an estimate, not provider billing.
 
-CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG and scanned PDFs use a configured vision model; for scanned PDFs the first page is rendered for the vision route. File content is treated as untrusted data. The parser processes up to 12 specification rows per upload. Complex solution requests produce several component roles and explicitly mark compatibility uncertain when critical ratings are absent. Modes include Cheapest, Available, Best fit and Preferred brand; follow-up requests can rerank a recently verified shortlist without another model call.
+CSV, XLS/XLSX, DOCX and text PDFs are parsed locally. JPG/PNG and scanned PDFs use a configured vision model; for scanned PDFs the first page is rendered for the vision route. File content is treated as untrusted data. The parser processes up to 12 specification rows per upload. Complex solution requests produce several component roles and explicitly mark compatibility uncertain when critical ratings are absent. Modes include Cheapest, Available, Best fit and Preferred brand; follow-up requests recheck the catalog rather than reusing stale prices and stock.
 
 Official purchase conditions are shown from [EKT's information page](https://ekt.kz/about/information/); product-specific ETA and minimum order remain unknown.
 
 ## Data and session state
 
-- EKT's catalog list is cached in `catalog_cache.json`; shortlisted product details are requested from the EKT API. A cached search result may be reranked for up to 120 seconds, so repeat views are not guaranteed to reflect a price or stock change during that interval. Stock is checked again before a local cart addition.
-- Chat sessions and prototype carts live in server memory. The browser keeps the session identifier in local storage; restarting the server loses the in-memory cart. The prototype does not authenticate EKT customers or update their official basket.
-- When a model route is configured, customer text or uploaded images may be sent to the selected OpenAI/NVIDIA provider. Use synthetic or approved data in demos. `model_usage.json` records local estimated usage, not a provider invoice.
+- EKT's catalog list is cached in `catalog_cache.json`; shortlisted product details are requested from the EKT API. Searches and follow-up requests fetch current product details; price and stock are checked again when a local cart action is confirmed.
+- Chat sessions and prototype carts live in server memory. The new storefront keeps its session identifier in sessionStorage; the legacy /engine interface uses localStorage. Server sessions expire after 30 minutes of inactivity, and restarting the server loses the in-memory cart. The prototype does not authenticate EKT customers or update their official basket.
+- When a model route is configured, customer text may be sent to the selected OpenAI/NVIDIA provider; photos and scans require separate explicit consent before transmission. Use synthetic or approved data in demos. `model_usage.json` records local estimated usage, not a provider invoice.
 
 ## Demo
 
@@ -46,8 +53,31 @@ The [first-pass report](qa/baseline-report-ca57662b.md) and [machine-readable re
 
 ## Limits
 
+### Cart confirmation patch
+
+Single-item and batch cart actions share an expiring server-side confirmation gate.
+The preview contains the exact items, quantities, prices, total and stock scope.
+Confirmations expire after 120 seconds and are scoped to the current session and
+action type. Price or purchase-condition changes require a fresh confirmation.
+Repeated confirmations are rejected with HTTP 400 without applying the action again.
+All cart mutations for one session are serialized, including mixed single/batch
+requests. `POST /api/cart/cancel` revokes a pending token. The existing endpoint
+names and response fields remain available.
+Chat commands such as `добавь 2 в корзину` preserve the requested quantity.
+
+An optional integer `store_id` is accepted for each cart line. When omitted,
+stock is checked across warehouses and the preview explicitly says no warehouse
+was chosen. The gate also checks `KRATNOST_MIN` when supplied by EKT. Stock checks
+do not reserve goods: this is still a local prototype, with no official EKT cart
+mutation. The session-ID header remains a bearer credential; sessions expire after 30 minutes of inactivity. Full customer authentication and
+deployment across multiple workers require separate work.
+
+Run the offline regression checks with `python -m unittest discover -s tests -v`.
+They substitute EKT responses and do not call a paid model or place real orders.
+
+### Existing prototype limits
+
 - The browser's cart is a local session prototype. The official EKT checkout link opens the real site but does not transfer local items.
 - The supplied EKT API provides catalog and detail endpoints, not its entire internal database or an order-writing contract.
 - Compatibility checks cover identifiable ratings in product names and exposed properties; they cannot certify electrical design.
 - If EKT omits a certificate link, minimum order or item-specific ETA, the UI reports that information as unavailable.
-
