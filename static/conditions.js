@@ -14,3 +14,4 @@ document.getElementById('query-form').onsubmit = async event => {
     bubble('Не удалось получить подтверждённые условия покупки.');
   }
 };
+
