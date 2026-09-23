@@ -26,6 +26,8 @@ from .features import install_features, conversation_intent
 from .i18n import language, search_phrase, localize_result, tr
 from .upload_guard import validate_file, parse_isolated
 from .integration import install_integration
+from .grounding import CatalogUnavailable, input_guard, product_fact, offer_manager, service_failure
+from .advisor import advise
 
 app = FastAPI(title='EKT AI Engineer')
 engine = Engine()
@@ -33,6 +35,7 @@ router = ModelRouter()
 sessions: dict[str, dict] = {}
 STATIC = Path(__file__).parent.parent / 'static'
 UPLOAD_SLOTS = asyncio.Semaphore(2)
+CHAT_TIMEOUT_SECONDS = 18
 install_security(app)
 install_integration(app)
 
@@ -45,7 +48,7 @@ async def validation_error(request, exc):
 class Query(BaseModel):
     model_config = ConfigDict(extra='forbid')
     text: str = Field(min_length=1, max_length=2000)
-    mode: Literal['best', 'cheapest', 'available', 'brand'] = 'best'
+    mode: Literal['best', 'cheapest', 'expensive', 'available', 'brand'] = 'best'
     language: Literal['ru', 'kk'] | None = None
 
 
@@ -257,13 +260,20 @@ def rerank_cached(result: dict, mode: str, brand: str | None) -> dict:
     return updated
 
 
-@app.post('/api/query')
-async def query(body: Query, x_session_id: str | None = Header(default=None)):
+async def query_impl(body: Query, x_session_id: str | None = None):
     sid, state = session(x_session_id)
     lang = language(state, body.text, body.language)
     history = state.setdefault('history', [])
-    history.append({'role': 'user', 'text': redact(body.text)[:1000]})
-    intent = conversation_intent(body.text, state, lang)
+    guard = input_guard(body.text, lang)
+    history.append({'role': 'user', 'text': '[private input omitted]' if guard and guard['action'] == 'privacy_guard' else redact(body.text)[:1000]})
+    speed_request = bool(state.get('last_query') and re.search(r'быстрее|скорее|жылдам|тезірек', body.text, re.I))
+    intent = guard or (None if speed_request else conversation_intent(body.text, state, lang))
+    if not intent:
+        try:
+            intent = await product_fact(body.text, state, engine, lang)
+        except CatalogUnavailable:
+            state.pop('last_result', None)
+            intent = service_failure(lang)
     if intent:
         pending = state.pop('pending_chat_cart', None)
         if pending:
@@ -273,6 +283,8 @@ async def query(body: Query, x_session_id: str | None = Header(default=None)):
         result = {'session_id': sid, 'products': [], 'events': [], 'warnings': [], 'route': 'DIRECT', **intent}
     else:
         phrase = search_phrase(body.text) if lang == 'kk' else body.text
+        if speed_request:
+            phrase = 'быстрее'
         if lang == 'kk':
             if re.fullmatch(r'\s*(иә|иә[, ]+қос|растау)\s*[.!]?\s*', body.text.lower()):
                 phrase = 'да, добавь'
@@ -290,13 +302,28 @@ async def query(body: Query, x_session_id: str | None = Header(default=None)):
             state.pop('pending_chat_cart', None)
             result = {'session_id': sid, 'action': 'cancelled', 'message': tr('cancelled', lang), 'products': [], 'events': [], 'warnings': []}
         else:
-            result = await query_core(Query(text=phrase, mode=body.mode), sid)
+            try:
+                result = await query_core(Query(text=phrase, mode=body.mode), sid)
+            except CatalogUnavailable:
+                state.pop('last_result', None)
+                result = {'session_id': sid, **service_failure(lang)}
+            except HTTPException:
+                result = {'session_id': sid, **service_failure(lang)}
         if not result.get('action'):
             cards = result.get('products', [])
             result['message'] = tr('found', lang, n=len(cards)) if cards else tr('empty', lang)
-            result['handoff_available'] = not cards or any(p.get('warnings') for p in cards)
+            result['handoff_available'] = not cards or any(p.get('warnings') for p in cards) or bool(result.get('clarification_questions')) or 'fallback' in result.get('route', '')
             if any(p.get('warnings') for p in cards):
                 result['message'] += ' ' + tr('uncertain', lang)
+            if result.get('comparison_message'):
+                result['message'] += ' ' + result['comparison_message']
+            if 'fallback' in result.get('route', ''):
+                result['message'] += ' ИИ-модель недоступна; выполнен поиск по каталогу.' if lang == 'ru' else ' AI моделі қолжетімсіз; каталог бойынша іздеу орындалды.'
+            if result.get('mode') == 'available':
+                result['message'] += ' Порядок по наличию, а не сроку доставки: индивидуальный ETA неизвестен, уточните его у менеджера.' if lang == 'ru' else 'Реті қор бойынша, жеткізу мерзімі бойынша емес. Жеке мерзім белгісіз, менеджерден нақтылаңыз.'
+                result['handoff_available'] = True
+            if result.get('mode') == 'expensive':
+                result['message'] += ' Показаны более дорогие варианты; высокая цена сама по себе не подтверждает лучшее качество.' if lang == 'ru' else 'Қымбатырақ нұсқалар көрсетілді; жоғары баға сапаның жоғары екенін растамайды.'
     if lang == 'kk' and result.get('action') == 'cart_confirmation':
         token = state.get('pending_chat_cart', {}).get('token')
         pending = state.get('cart_actions', {}).get(token, {})
@@ -304,8 +331,26 @@ async def query(body: Query, x_session_id: str | None = Header(default=None)):
         total = sum(p['line_total'] for p in rows)
         result['message'] = 'Себетке қосуды растаңыз:\n' + '\n'.join(f"{p['quantity']} × {p['name']} — {p['line_total']:,.2f} ₸" for p in rows) + f'\nБарлығы: {total:,.2f} ₸. «Иә, қос» деп жауап беріңіз.'
     result = localize_result(result, lang)
+    if result.get('action') in {'cart_error', 'cart_unavailable', 'payment'}:
+        result['handoff_available'] = True
+    result = offer_manager(result, lang)
     history.append({'role': 'assistant', 'text': result.get('message', '')[:1500]})
     del history[:-30]
+    return result
+
+
+@app.post('/api/query')
+async def query(body: Query, x_session_id: str | None = Header(default=None)):
+    sid, state = session(x_session_id)
+    started = time.monotonic()
+    try:
+        result = await asyncio.wait_for(query_impl(body, sid), timeout=CHAT_TIMEOUT_SECONDS)
+    except TimeoutError:
+        state.pop('last_result', None)
+        state.pop('pending_chat_cart', None)
+        result = offer_manager({'session_id': sid, **service_failure(state.get('language', 'ru'))}, state.get('language', 'ru'))
+        result['timed_out'] = True
+    result['elapsed_ms'] = round((time.monotonic() - started) * 1000)
     return result
 
 
@@ -354,14 +399,18 @@ async def query_core(body: Query, x_session_id: str | None = None):
         return {'session_id': sid, 'action': 'cart_confirmation', 'message': prepared['message'] + ' Ответьте «да, добавь» в следующем сообщении.', 'products': [], 'events': ['Live stock checked', 'Awaiting explicit confirmation'], 'warnings': [], 'route': 'DIRECT'}
     state.pop('pending_chat_cart', None)
     if state.get('last_query'):
-        if 'сделай дешевле' in lower or lower in {'дешевле', 'подешевле'}:
+        if re.search(r'дешевле|подешевле|арзанырақ', lower):
             text, mode = state['last_query'], 'cheapest'
+        elif re.search(r'подороже|дороже|қымбатырақ', lower):
+            text, mode = state['last_query'], 'expensive'
         elif lower in {'в наличии', 'только в наличии', 'быстрее'}:
             text, mode = state['last_query'], 'available'
         elif lower.startswith('оставь ') or lower.startswith('предпочтительный бренд '):
             brand = text.split()[-1]
             text = re.sub(r'\b(?:schneider|legrand|abb|iek|chint|dekraft|ekt)\b', '', state['last_query'], flags=re.I).strip() + ' ' + brand
             mode = 'brand'
+        elif not product_kind(text) and re.search(r'\b[eеg]\s*\d{1,2}\b|тепл\w* свет|холодн\w* свет|нейтральн\w* свет', lower):
+            text = state['last_query'] + ' ' + text
         else:
             replacement = re.search(r'замени\s+(\w+)\s+на\s+(\w+)', text, re.I)
             if replacement:
@@ -373,7 +422,9 @@ async def query_core(body: Query, x_session_id: str | None = None):
             if engine.catalog or app.state.sync_task.done():
                 break
             await asyncio.sleep(0.1)
-    result = await handle_query(text, mode, engine, router)
+    result = await engine.solution(text, mode) if mode in {'cheapest', 'expensive', 'available'} else await handle_query(text, mode, engine, router)
+    if mode == 'best' and result.get('route') != 'DIRECT':
+        result = await advise(text, result, router, state.get('language', 'ru'))
     result['session_id'] = sid
     result['user_message'] = original_text
     state['last_query'] = text

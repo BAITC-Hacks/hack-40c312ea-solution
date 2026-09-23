@@ -12,16 +12,17 @@ class EKTClient:
     def __init__(self):
         self.user = os.getenv('EKT_USER', 'apiuser')
         self.password = os.getenv('EKT_PASSWORD', '')
-        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=20, follow_redirects=False)
+        self.client = httpx.AsyncClient(auth=(self.user, self.password), timeout=5, follow_redirects=False,
+                                       limits=httpx.Limits(max_connections=12, max_keepalive_connections=12))
 
     async def _get(self, url: str, params: dict) -> dict[str, Any]:
-        for attempt in range(3):
+        for attempt in range(2):
             try:
                 response = await self.client.get(url, params=params)
                 response.raise_for_status()
                 return response.json()
             except (httpx.TimeoutException, httpx.TransportError, httpx.HTTPStatusError):
-                if attempt == 2:
+                if attempt == 1:
                     raise
                 await asyncio.sleep(0.4 * (2 ** attempt))
         raise RuntimeError('EKT request failed')
@@ -51,4 +52,3 @@ class EKTClient:
 
     async def close(self):
         await self.client.aclose()
-

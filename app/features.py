@@ -1,5 +1,6 @@
 """Optional storefront features. All writes remain behind explicit confirmation."""
 import copy
+import asyncio
 import re
 import secrets
 import time
@@ -38,6 +39,10 @@ class RecommendationPreference(BaseModel):
 
 def category(product):
     name = product.get('name', '').lower()
+    if 'патрон' in name:
+        return 'holder'
+    if re.search(r'ламп|\bled\b', name) and not re.search(r'светильник|прожектор', name):
+        return 'lamp'
     for group, terms in [('enclosure', ('щит', 'шкаф', 'қалқан')), ('rail', ('din', 'дин-рейк')),
                          ('busbar', ('шина ', 'шинк', 'n/pe')), ('gland', ('кабельный ввод', 'сальник')),
                          ('label', ('маркиров', 'маркер')), ('cable', ('кабель ', 'провод ')),
@@ -53,6 +58,7 @@ async def recommendations(engine, product_id, state, lang):
     source = await engine.ekt.detail(product_id)
     rules = {'enclosure': {'rail', 'busbar', 'gland', 'label'}, 'cable': {'terminal', 'label', 'gland'},
              'breaker': {'enclosure', 'label', 'rail'}}
+    rules['lamp'] = {'holder'}
     allowed = rules.get(category(source), set())
     if not allowed:
         return []
@@ -63,17 +69,27 @@ async def recommendations(engine, product_id, state, lang):
     ids += [p['id'] for p in engine.catalog if category(p) in allowed][:20]
     excluded = {product_id} | {p['id'] for p in state['cart']}
     output = []
-    for pid in dict.fromkeys(ids):
+    candidate_ids = list(dict.fromkeys(pid for pid in ids if pid not in excluded))[:12]
+    solutions = await asyncio.gather(*(engine.solution(str(pid)) for pid in candidate_ids), return_exceptions=True)
+    for pid, result in zip(candidate_ids, solutions):
         if pid in excluded:
             continue
         try:
-            result = await engine.solution(str(pid))
+            if isinstance(result, Exception):
+                continue
             p = next((p for p in result['products'] if p['id'] == pid), None)
             if not p or category(p) not in allowed or not p.get('quantity') or p.get('warnings'):
                 continue
+            if category(source) == 'lamp':
+                base = re.search(r'\b(?:e|е)\s*(14|27|40)\b', source.get('name', ''), re.I)
+                other = re.search(r'\b(?:e|е)\s*(14|27|40)\b', p.get('name', ''), re.I)
+                if not base or not other or base.group(1) != other.group(1):
+                    continue
             p['reason'] = ('Дополнение по назначению. Проверьте размеры и состав комплекта; совместимость не подтверждена.'
                            if lang == 'ru' else 'Мақсаты бойынша қосымша бұйым. Өлшемі мен жинақтамасын тексеріңіз; үйлесімділік расталмаған.')
             p['recommendation_source'] = 'catalog' if str(pid) in [str(x) for x in recommended] else 'category_rule'
+            if category(source) == 'lamp':
+                p['reason'] = (f'Патрон с тем же обозначением цоколя E{base.group(1)}. Может понадобиться, только если подходящего патрона ещё нет. Проверьте размеры и допустимую мощность; монтаж выполняет специалист.' if lang == 'ru' else f'E{base.group(1)} цоколі бірдей патрон. Сәйкес патрон жоқ болса ғана қажет болуы мүмкін. Өлшемі мен рұқсат етілген қуатын тексеріңіз; орнатуды маман орындайды.')
             output.append(p)
             if len(output) == 3:
                 break
@@ -200,4 +216,3 @@ def install_features(app, get_session, engine, sessions):
             sessions.pop(sid, None)
             sid, _ = get_session(None)
         return {'session_id': sid, 'cleared': True}
-

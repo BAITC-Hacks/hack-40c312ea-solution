@@ -55,7 +55,8 @@ def localize_result(result, lang):
         result['source_warnings'] = result['warnings']
         result['warnings'] = [tr('uncertain', lang)]
     for product in result.get('products', []):
-        product['reason'] = 'Сұрауға сәйкес каталогтан табылды. Толық үйлесімділікті маманмен нақтылаңыз.'
+        if not product.get('reason_is_grounded'):
+            product['reason'] = 'Сұрауға сәйкес каталогтан табылды. Толық үйлесімділікті маманмен нақтылаңыз.'
         if product.get('warnings'):
             product['source_warnings'] = product['warnings']
             product['warnings'] = [tr('uncertain', lang)]

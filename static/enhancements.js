@@ -80,7 +80,7 @@ handoff=async function(){
 details=async function(id){
   const p=await api('products/'+id),b=modal(p.name);
   b.append(el('p','ID '+p.id+' · '+(p.article||''),'muted'),el('h2',money(p.price)),el('p',p.quantity==null?t('unknown'):t('stock')+p.quantity));
-  const labels={brand:['Бренд','Бренд'],poles:['Полюса','Полюстер'],current:['Номинальный ток','Номиналды ток'],voltage:['Напряжение','Кернеу'],breaking_capacity:['Отключающая способность','Ажырату қабілеті']};
+  const labels={brand:['Бренд','Бренд'],poles:['Полюса','Полюстер'],current:['Номинальный ток','Номиналды ток'],voltage:['Напряжение','Кернеу'],breaking_capacity:['Отключающая способность','Ажырату қабілеті'],base:['Цоколь','Цоколь'],power:['Мощность','Қуат'],color_temperature:['Цветовая температура','Түс температурасы'],luminous_flux:['Световой поток','Жарық ағыны'],mounting:['Способ монтажа','Орнату тәсілі'],application:['Область применения','Қолдану саласы']};
   const attrs=el('dl',undefined,'attributes');
   for(const [k,v]of Object.entries(p.attributes||{}))if(v){attrs.append(el('dt',labels[k]?.[lang==='kk'?1:0]||k),el('dd',v));}
   b.append(attrs,el('p',t('sourceName'),'muted'));
@@ -101,6 +101,13 @@ details=async function(id){
 };
 
 const originalCart=cart;
+words.expensive=['Подороже','Қымбатырақ'];
+cross=async function(id){
+  const prefs=await api('session');if(prefs.recommendations_enabled===false)return;
+  openChat();const n=bubble(lang==='kk'?'Қажет болса, қосымша бұйымдарды каталогтан тексере аламын. Олар автоматты түрде қосылмайды.':'Если интересно, могу проверить дополнения по каталогу. Они не добавятся автоматически; это подбор по назначению, а не статистика чужих покупок.');
+  const show=button(lang==='kk'?'Қордағы нұсқаларды көрсету':'Показать варианты в наличии',async()=>{show.disabled=true;try{const d=await api('recommendations/'+id);bubble(d.message);for(const p of d.products||[]){$('messages').append(card(p));bubble(p.reason);}}catch(e){bubble(t('error'));$('messages').append(button(t('manager'),handoff,'outline'));}});
+  n.append(show,button(t('stopCross'),async()=>{await api('session/recommendations',{enabled:false});n.remove();},'outline'));
+};
 cart=async function(){await originalCart();const b=$('modalBody');if($('count').textContent==='0')b.prepend(el('p',t('cartEmpty')));b.append(externalLink(t('localCart'),'/cart','cart-state-link'));};
 const originalConfirmation=showConfirmation;
 showConfirmation=function(d,confirm,id){return originalConfirmation(d,async()=>{const result=await confirm();const note=bubble(t('confirmed'));note.append(el('br'),externalLink(t('localCart'),result.cart_url||'/cart','cart-state-link'));return result;},id);};
@@ -112,14 +119,14 @@ send=async function(text,mode='best'){
   try{
     const d=await api('query',{text,language:lang,mode});progress.remove();
     bubble(d.message||t('empty'));latestProducts=d.products||[];
-    if(!d.action){latestQuery=text;for(const q of d.clarification_questions||[])bubble(q);}
+    if(!d.action){latestQuery=d.query||text;for(const q of d.clarification_questions||[])bubble(q);}
     for(const p of d.products||[]){$('messages').append(card(p));if(p.reason)bubble(p.reason);}
     if(d.events?.length){const activity=el('details',undefined,'activity-log');activity.append(el('summary',(lang==='kk'?'Тексеру қадамдары':'Ход проверки')+' · '+(d.route||'DIRECT')));const names={'Requirements extracted':['Требования выделены','Талаптар анықталды'],'Catalog searched':['Каталог проверен','Каталог тексерілді'],'Solution generated':['Подборка готова','Таңдау дайын'],'Live stock rechecked':['Остаток перепроверен','Қор қайта тексерілді'],'Local cart updated':['Корзина обновлена','Себет жаңартылды']};for(const event of d.events){const text=names[event]?.[lang==='kk'?1:0]||(lang==='kk'?'Каталог деректері тексерілді':event);activity.append(el('div','✓ '+text));}$('messages').append(activity);}
     if(d.handoff_available||d.action==='manager')$('messages').append(button(t('manager'),handoff,'outline'));
     if(d.action==='cart_confirmation'){const n=bubble(t('twoMinutes'));n.append(button(t('confirm'),()=>send(lang==='kk'?'иә, қос':'да, добавь')),button(t('cancel'),()=>send(lang==='kk'?'бас тарту':'отмена'),'outline'));}
-    if(d.action==='cart_added'){const n=bubble(t('confirmed'));n.append(el('br'),externalLink(t('localCart'),d.cart_url||'/cart','cart-state-link'));}
+    if(d.action==='cart_added'){const n=bubble(t('confirmed'));n.append(el('br'),externalLink(t('localCart'),d.cart_url||'/cart','cart-state-link'));if(d.cart?.length)await cross(d.cart[d.cart.length-1].id);}
     await refreshCart();
-  }catch(e){progress.remove();bubble(lang==='kk'?t('error'):(e.message||t('error')));}
+  }catch(e){progress.remove();bubble(lang==='kk'?'Деректерді тексеру мүмкін болмады. Кейінірек қайталаңыз немесе менеджерге хабарласыңыз.':'Не удалось проверить данные. Попробуйте позже или свяжитесь с менеджером.');$('messages').append(button(t('manager'),handoff,'outline'));}
   finally{$('send').disabled=false;$('messages').scrollTop=$('messages').scrollHeight;}
 };
 
@@ -131,7 +138,7 @@ const categories=el('nav',undefined,'categories');categories.setAttribute('aria-
 for(const key of ['all','breaker','cable','enclosure']){const b=button(t(key),()=>{catalogCategory=key==='all'?'':key;categories.querySelectorAll('button').forEach(x=>x.classList.toggle('active',x===b));return catalog($('searchText').value);},key==='all'?'active':'outline');b.dataset.extra=key;categories.append(b);}
 $('products').before(categories);
 const modes=el('div',undefined,'chat-modes');
-for(const [label,mode]of [['best','best'],['cheapest','cheapest'],['available','available']]){const b=button(t(label),()=>latestQuery?send(latestQuery,mode):toast(t('greeting')),'outline');b.dataset.extra=label;modes.append(b);}
+for(const [label,mode]of [['best','best'],['cheapest','cheapest'],['expensive','expensive'],['available','available']]){const b=button(t(label),()=>latestQuery?send(latestQuery,mode):toast(t('greeting')),'outline');b.dataset.extra=label;modes.append(b);}
 document.querySelector('.chat-tools').after(modes);
 const chatLanguage=el('select');chatLanguage.id='chatLanguage';chatLanguage.setAttribute('aria-label','Язык чата / Чат тілі');chatLanguage.append(new Option('RU','ru'),new Option('ҚАЗ','kk'));
 chatLanguage.onchange=async()=>{lang=chatLanguage.value;translate();try{await api('session/language',{language:lang});bubble(t('greeting'));}catch(e){fail(e);}};

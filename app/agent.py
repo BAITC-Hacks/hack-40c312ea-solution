@@ -34,7 +34,9 @@ async def handle_query(text: str, mode: str, engine, router) -> dict:
     complete_total = True
     for requirement, result in zip(plan['requirements'], found):
         products = result.get('products', []) if isinstance(result, dict) else []
-        chosen = next((p for p in products if not p['warnings'] and (p['quantity'] or 0) >= requirement['quantity']), None)
+        # A generated component role is a proposal, never an approved engineering BOM.
+        # Require an explicit specification before enabling bulk cart addition.
+        chosen = None
         if needs_motor_current:
             chosen = None
         status = 'candidate' if chosen else ('clarification' if products else 'unavailable')
@@ -67,4 +69,3 @@ async def handle_query(text: str, mode: str, engine, router) -> dict:
         'warnings': warnings,
         'clarification_questions': plan['questions'],
     }
-

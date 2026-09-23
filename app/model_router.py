@@ -6,6 +6,7 @@ from pathlib import Path
 
 import httpx
 from .security import redact
+from .engine import product_kind, requested_brand, requested_electrical, requested_cable_size
 
 
 class ModelRouter:
@@ -51,7 +52,7 @@ class ModelRouter:
         if provider == 'openai':
             body['response_format'] = {'type': 'json_object'}
         try:
-            async with httpx.AsyncClient(timeout=25) as client:
+            async with httpx.AsyncClient(timeout={'CHEAP': 4, 'MEDIUM': 6, 'STRONG': 12, 'VISION': 25}.get(level, 6)) as client:
                 response = await client.post(base + '/chat/completions', headers={'Authorization': f'Bearer {key}'}, json=body)
                 response.raise_for_status()
                 payload = response.json()
@@ -78,6 +79,14 @@ class ModelRouter:
             try:
                 value = self.parse_json(answer)['search_query']
                 if isinstance(value, str) and 2 <= len(value) <= 150:
+                    # A model may translate words, but cannot silently replace an ID,
+                    # rating, brand, cable size or product category supplied by the user.
+                    if (set(re.findall(r'\d+(?:[.,]\d+)?', text)) != set(re.findall(r'\d+(?:[.,]\d+)?', value))
+                            or (product_kind(text) and product_kind(text) != product_kind(value))
+                            or (requested_brand(text) and requested_brand(text) != requested_brand(value))
+                            or any(a and a != b for a, b in zip(requested_electrical(text), requested_electrical(value)))
+                            or (requested_cable_size(text) and requested_cable_size(text) != requested_cable_size(value))):
+                        return text, f'{route} · original constraints preserved'
                     return value, route
             except (ValueError, KeyError, TypeError):
                 pass
@@ -110,10 +119,19 @@ class ModelRouter:
                 description = item['description'].strip()[:160]
                 if len(description) < 3:
                     continue
-                valid.append({'description': description, 'quantity': max(1, min(int(item.get('quantity', 1)), 100)), 'role': str(item.get('role', 'Компонент'))[:100]})
+                # Generated engineering ratings and arbitrary model prose are not facts.
+                if re.search(r'\d', description):
+                    description = re.sub(r'\d+(?:[.,]\d+)?\s*[^\s,;]*', '', description).strip()
+                kind = product_kind(description)
+                roles = {'breaker': 'Защитный аппарат', 'rcd': 'Дифференциальная защита', 'contactor': 'Контактор', 'relay': 'Реле', 'cable': 'Кабель', 'enclosure': 'Корпус', 'lamp': 'Лампа', 'luminaire': 'Светильник'}
+                if kind not in roles:
+                    continue
+                valid.append({'description': description, 'quantity': 1, 'role': roles[kind]})
             if not valid:
                 raise ValueError('No usable requirements')
-            prepared = {'requirements': valid, 'questions': [str(x)[:250] for x in plan.get('questions', [])[:2]], 'warnings': [str(x)[:250] for x in plan.get('warnings', [])[:4]]}
+            prepared = {'requirements': valid,
+                        'questions': ['Уточните паспортные параметры оборудования, условия установки и количество каждого компонента.'],
+                        'warnings': ['Это предварительные роли компонентов. Номиналы, количества и совместимость комплекта требуют проверки специалистом.']}
             return prepared, route
         except (ValueError, TypeError, KeyError):
             return None, f'{route} → DIRECT fallback (invalid plan)'
